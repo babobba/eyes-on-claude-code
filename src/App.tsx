@@ -197,6 +197,7 @@ const Dashboard = () => {
           const clamped = await clampPositionToScreen(saved.x, saved.y, saved.width, saved.height);
           await window.setSize(new LogicalSize(saved.width, saved.height));
           await window.setPosition(new LogicalPosition(clamped.x, clamped.y));
+          savedStateRef.current = null;
           clearSavedWindowState();
         }
       } else {
