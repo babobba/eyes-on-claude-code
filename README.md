@@ -136,7 +136,7 @@ If Claude Code is running inside a tmux pane, the session card displays a **Term
 
 When enabled (default), the dashboard automatically shrinks to a compact view when it loses focus:
 
-![minimum_view](https://github.com/user-attachments/assets/placeholder-minimum-view)
+![minimum_view](https://github.com/user-attachments/assets/32523bcf-88b2-4445-8c3c-2675af1c4994)
 
 - **Compact display**: Shows only the title bar with session status counts (🟢:1 🔐:2 ⏳:1 ✅:3)
 - **Auto-restore**: Returns to full size when the window regains focus
