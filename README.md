@@ -132,11 +132,23 @@ If Claude Code is running inside a tmux pane, the session card displays a **Term
   - Waiting (Permission/Input): attention sound
   - Completed: completion sound
 
+#### Minimum Mode
+
+When enabled (default), the dashboard automatically shrinks to a compact view when it loses focus:
+
+![minimum_view](https://github.com/user-attachments/assets/placeholder-minimum-view)
+
+- **Compact display**: Shows only the title bar with session status counts (🟢:1 🔐:2 ⏳:1 ✅:3)
+- **Auto-restore**: Returns to full size when the window regains focus
+- **Position memory**: Remembers the original window size and position
+
+You can toggle this feature from the menubar: **Window → Minimum Mode**.
+
 #### Opacity settings
 
 - The dashboard switches opacity between **active/inactive**.
   - **Active**: when the dashboard has focus (default: 100%)
-  - **Inactive**: when it does not have focus (default: 30%)
+  - **Inactive**: when it does not have focus (default: 100%)
 - You can change opacity from the menubar: **Window → Opacity**.
 
 ---
