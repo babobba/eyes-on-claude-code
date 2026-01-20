@@ -26,12 +26,48 @@ import type { SetupStatus } from '@/types';
 
 const MINIMUM_VIEW_HEIGHT = 50;
 const MINIMUM_VIEW_WIDTH = 240;
+const SAVED_WINDOW_STATE_KEY = 'eocc_saved_window_state';
 
 interface SavedWindowState {
   width: number;
   height: number;
   x: number;
   y: number;
+}
+
+function loadSavedWindowState(): SavedWindowState | null {
+  try {
+    const stored = localStorage.getItem(SAVED_WINDOW_STATE_KEY);
+    if (!stored) return null;
+    const parsed = JSON.parse(stored);
+    if (
+      typeof parsed.width === 'number' &&
+      typeof parsed.height === 'number' &&
+      typeof parsed.x === 'number' &&
+      typeof parsed.y === 'number'
+    ) {
+      return parsed as SavedWindowState;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function saveSavedWindowState(state: SavedWindowState): void {
+  try {
+    localStorage.setItem(SAVED_WINDOW_STATE_KEY, JSON.stringify(state));
+  } catch {
+    // Ignore storage errors
+  }
+}
+
+function clearSavedWindowState(): void {
+  try {
+    localStorage.removeItem(SAVED_WINDOW_STATE_KEY);
+  } catch {
+    // Ignore storage errors
+  }
 }
 
 async function clampPositionToScreen(
@@ -77,7 +113,7 @@ const DEBOUNCE_MS = 150;
 const Dashboard = () => {
   const { dashboardData, settings, isLoading, refreshData } = useAppContext();
   const [isActive, setIsActive] = useState(true);
-  const savedStateRef = useRef<SavedWindowState | null>(null);
+  const savedStateRef = useRef<SavedWindowState | null>(loadSavedWindowState());
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Always apply mini-view class to body
@@ -149,6 +185,7 @@ const Dashboard = () => {
           await window.setSize(new LogicalSize(saved.width, saved.height));
           await window.setPosition(new LogicalPosition(clamped.x, clamped.y));
           savedStateRef.current = null;
+          clearSavedWindowState();
         }
         return;
       }
@@ -160,6 +197,7 @@ const Dashboard = () => {
           const clamped = await clampPositionToScreen(saved.x, saved.y, saved.width, saved.height);
           await window.setSize(new LogicalSize(saved.width, saved.height));
           await window.setPosition(new LogicalPosition(clamped.x, clamped.y));
+          clearSavedWindowState();
         }
       } else {
         // Save current size and position before minimizing
@@ -169,12 +207,14 @@ const Dashboard = () => {
         ]);
 
         // Convert physical to logical pixels
-        savedStateRef.current = {
+        const state: SavedWindowState = {
           width: physicalSize.width / scaleFactor,
           height: physicalSize.height / scaleFactor,
           x: physicalPosition.x / scaleFactor,
           y: physicalPosition.y / scaleFactor,
         };
+        savedStateRef.current = state;
+        saveSavedWindowState(state);
 
         await window.setSize(new LogicalSize(MINIMUM_VIEW_WIDTH, MINIMUM_VIEW_HEIGHT));
       }
