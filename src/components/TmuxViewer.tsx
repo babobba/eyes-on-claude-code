@@ -35,9 +35,19 @@ export const TmuxViewer = ({ paneId }: TmuxViewerProps) => {
     return instance;
   }, []);
 
+  // Trim trailing empty lines to prevent scrolling past actual content
+  const trimmedContent = useMemo(() => {
+    const lines = content.split('\n');
+    let lastNonEmptyIndex = lines.length - 1;
+    while (lastNonEmptyIndex >= 0 && lines[lastNonEmptyIndex].trim() === '') {
+      lastNonEmptyIndex--;
+    }
+    return lines.slice(0, lastNonEmptyIndex + 1).join('\n');
+  }, [content]);
+
   const htmlContent = useMemo(() => {
-    return ansiUp.ansi_to_html(content);
-  }, [ansiUp, content]);
+    return ansiUp.ansi_to_html(trimmedContent);
+  }, [ansiUp, trimmedContent]);
 
   const loadContent = useCallback(async () => {
     if (!isMountedRef.current) return;
