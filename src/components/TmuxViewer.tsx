@@ -88,11 +88,6 @@ export const TmuxViewer = ({ paneId }: TmuxViewerProps) => {
       return null;
     }
 
-    // Handle Ctrl+key combinations
-    if (e.ctrlKey && e.key.length === 1) {
-      return `C-${e.key.toLowerCase()}`;
-    }
-
     // Handle special keys
     const keyMap: Record<string, string> = {
       Enter: 'Enter',
@@ -123,12 +118,39 @@ export const TmuxViewer = ({ paneId }: TmuxViewerProps) => {
       F12: 'F12',
     };
 
-    if (keyMap[e.key]) {
-      return keyMap[e.key];
+    // Handle Shift+Tab specially - tmux uses BTab (Back Tab) instead of S-Tab
+    if (e.shiftKey && e.key === 'Tab' && !e.ctrlKey && !e.altKey) {
+      return 'BTab';
+    }
+
+    const tmuxKeyName = keyMap[e.key];
+    const isSpecialKey = !!tmuxKeyName;
+
+    // Build modifier prefix (order: Control, Meta/Alt, Shift)
+    // tmux format: C- (Control), M- (Alt/Option), S- (Shift)
+    let modifierPrefix = '';
+    if (e.ctrlKey) {
+      modifierPrefix += 'C-';
+    }
+    if (e.altKey) {
+      modifierPrefix += 'M-';
+    }
+    // Add Shift modifier only for special keys or when other modifiers are present
+    // For regular characters, Shift is already reflected in e.key (e.g., 'A' instead of 'a')
+    // Note: Shift+Tab is handled above as BTab
+    if (e.shiftKey && (isSpecialKey || e.ctrlKey || e.altKey)) {
+      modifierPrefix += 'S-';
+    }
+
+    if (isSpecialKey) {
+      return modifierPrefix + tmuxKeyName;
     }
 
     // Regular character
     if (e.key.length === 1) {
+      if (modifierPrefix) {
+        return modifierPrefix + e.key.toLowerCase();
+      }
       return e.key;
     }
 
