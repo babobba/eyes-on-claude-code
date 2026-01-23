@@ -34,9 +34,9 @@ use commands::{
     tmux_is_available, tmux_list_panes, tmux_send_keys,
 };
 use constants::{ICON_NORMAL, MINI_VIEW_HEIGHT, MINI_VIEW_WIDTH};
-use events::drain_events_queue;
+use events::{apply_events_to_state, read_events_from_queue};
 use menu::{build_app_menu, build_tray_menu, parse_opacity_menu_id};
-use persist::{load_runtime_state, save_runtime_state};
+use persist::{create_runtime_snapshot, load_runtime_state, save_runtime_snapshot};
 use settings::{get_app_log_dir, get_log_dir, load_settings, save_settings};
 use state::{AppState, ManagedState};
 use tray::{emit_state_update, update_tray_and_badge};
@@ -114,16 +114,23 @@ fn start_file_watcher(app_handle: tauri::AppHandle, state: Arc<Mutex<AppState>>)
         loop {
             match rx.recv() {
                 Ok(_event) => {
-                    let Ok(mut state_guard) = state.lock() else {
-                        eprintln!("[eocc] Failed to acquire state lock in watcher");
-                        continue;
-                    };
-                    let new_events = drain_events_queue(&app_handle, &mut state_guard);
+                    // File I/O outside of lock - this is the main fix for IO blocking
+                    let new_events = read_events_from_queue(&app_handle);
 
                     if !new_events.is_empty() {
-                        update_tray_and_badge(&app_handle, &state_guard);
-                        emit_state_update(&app_handle, &state_guard);
-                        save_runtime_state(&app_handle, &state_guard);
+                        // Acquire lock only for state updates, then release immediately
+                        let snapshot = {
+                            let Ok(mut state_guard) = state.lock() else {
+                                eprintln!("[eocc] Failed to acquire state lock in watcher");
+                                continue;
+                            };
+                            apply_events_to_state(&mut state_guard, &new_events);
+                            update_tray_and_badge(&app_handle, &state_guard);
+                            emit_state_update(&app_handle, &state_guard);
+                            create_runtime_snapshot(&state_guard)
+                        };
+                        // File I/O outside of lock
+                        save_runtime_snapshot(&app_handle, &snapshot);
                     }
                 }
                 Err(e) => {
@@ -203,11 +210,20 @@ fn main() {
                     // Also set the cached tmux path in the tmux module
                     tmux::set_cached_tmux_path(&restored.cached_paths.tmux_path);
                 }
-                // Drain any queued events written by the hook while app was not running
-                let new_events = drain_events_queue(&app_handle, &mut state_guard);
-                if !new_events.is_empty() {
-                    save_runtime_state(&app_handle, &state_guard);
-                }
+            }
+
+            // Drain any queued events written by the hook while app was not running
+            // File I/O is done outside of lock
+            let new_events = read_events_from_queue(&app_handle);
+            if !new_events.is_empty() {
+                let snapshot = {
+                    let mut state_guard = state_for_tray.lock().map_err(|_| {
+                        tauri::Error::Anyhow(anyhow::anyhow!("Failed to acquire state lock"))
+                    })?;
+                    apply_events_to_state(&mut state_guard, &new_events);
+                    create_runtime_snapshot(&state_guard)
+                };
+                save_runtime_snapshot(&app_handle, &snapshot);
             }
 
             // Get initial settings
@@ -359,17 +375,26 @@ fn main() {
                         }
                         Err(e) => eprintln!("[eocc] Cannot open logs: {}", e),
                     },
-                    "clear_sessions" => match state_for_tray_clone.lock() {
-                        Ok(mut state_guard) => {
-                            state_guard.sessions.clear();
-                            update_tray_and_badge(app, &state_guard);
-                            emit_state_update(app, &state_guard);
-                            save_runtime_state(app, &state_guard);
+                    "clear_sessions" => {
+                        let snapshot = match state_for_tray_clone.lock() {
+                            Ok(mut state_guard) => {
+                                state_guard.sessions.clear();
+                                update_tray_and_badge(app, &state_guard);
+                                emit_state_update(app, &state_guard);
+                                Some(create_runtime_snapshot(&state_guard))
+                            }
+                            Err(e) => {
+                                eprintln!(
+                                    "[eocc] Failed to acquire lock for clear_sessions: {:?}",
+                                    e
+                                );
+                                None
+                            }
+                        };
+                        if let Some(snapshot) = snapshot {
+                            save_runtime_snapshot(app, &snapshot);
                         }
-                        Err(e) => {
-                            eprintln!("[eocc] Failed to acquire lock for clear_sessions: {:?}", e)
-                        }
-                    },
+                    }
                     _ => {}
                 })
                 .on_tray_icon_event(|_tray, event| {

@@ -72,14 +72,16 @@ pub fn process_event(state: &mut AppState, event: EventInfo) {
     }
 }
 
-/// Drain (consume) `events.jsonl` as a queue:
+/// Read events from `events.jsonl` queue file without holding any locks.
+/// This function performs all file I/O operations:
 /// - atomically rename `events.jsonl` to a processing file
 /// - recreate an empty `events.jsonl`
-/// - process each line (JSON) and append the raw JSON to the app log
+/// - read and parse each line (JSON)
 /// - delete the processing file
 ///
-/// Parse-failed lines are logged as error and dropped.
-pub fn drain_events_queue(app: &tauri::AppHandle, state: &mut AppState) -> Vec<EventInfo> {
+/// Returns parsed events. Parse-failed lines are logged as error and dropped.
+/// Call `apply_events_to_state()` separately to update the AppState.
+pub fn read_events_from_queue(app: &tauri::AppHandle) -> Vec<EventInfo> {
     let mut new_events = Vec::new();
 
     let events_file = match get_events_file(app) {
@@ -140,7 +142,6 @@ pub fn drain_events_queue(app: &tauri::AppHandle, state: &mut AppState) -> Vec<E
                 }
                 match serde_json::from_str::<EventInfo>(&line) {
                     Ok(event) => {
-                        process_event(state, event.clone());
                         new_events.push(event);
                         // Store raw event JSON in the app log (rotated by tauri-plugin-log).
                         log::info!(target: "eocc.events.raw", "{}", line);
@@ -177,4 +178,12 @@ pub fn drain_events_queue(app: &tauri::AppHandle, state: &mut AppState) -> Vec<E
     }
 
     new_events
+}
+
+/// Apply parsed events to the AppState.
+/// This should be called while holding the state lock, after `read_events_from_queue()`.
+pub fn apply_events_to_state(state: &mut AppState, events: &[EventInfo]) {
+    for event in events {
+        process_event(state, event.clone());
+    }
 }
