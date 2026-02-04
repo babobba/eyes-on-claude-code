@@ -112,9 +112,16 @@ const DEBOUNCE_MS = 150;
 
 const Dashboard = () => {
   const { dashboardData, settings, isLoading, refreshData } = useAppContext();
-  const [isActive, setIsActive] = useState(true);
+  const [isActive, setIsActiveState] = useState(true);
+  const isActiveRef = useRef(true);
   const savedStateRef = useRef<SavedWindowState | null>(loadSavedWindowState());
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Update both state and ref simultaneously to avoid timing issues
+  const setIsActive = (active: boolean) => {
+    isActiveRef.current = active;
+    setIsActiveState(active);
+  };
 
   // Always apply mini-view class to body
   useEffect(() => {
@@ -179,6 +186,10 @@ const Dashboard = () => {
 
       // When minimum mode is disabled, restore window if it was shrunk
       if (!settings.minimum_mode_enabled) {
+        // Remove size constraints
+        await window.setMinSize(null);
+        await window.setMaxSize(null);
+
         const saved = savedStateRef.current;
         if (saved) {
           const clamped = await clampPositionToScreen(saved.x, saved.y, saved.width, saved.height);
@@ -191,6 +202,10 @@ const Dashboard = () => {
       }
 
       if (isActive) {
+        // Remove size constraints before restoring
+        await window.setMinSize(null);
+        await window.setMaxSize(null);
+
         // Restore to previous size and position
         const saved = savedStateRef.current;
         if (saved) {
@@ -217,12 +232,67 @@ const Dashboard = () => {
         savedStateRef.current = state;
         saveSavedWindowState(state);
 
-        await window.setSize(new LogicalSize(MINIMUM_VIEW_WIDTH, MINIMUM_VIEW_HEIGHT));
+        // Set size and lock it with min/max constraints to prevent OS from restoring
+        const miniSize = new LogicalSize(MINIMUM_VIEW_WIDTH, MINIMUM_VIEW_HEIGHT);
+        await window.setSize(miniSize);
+        await window.setMinSize(miniSize);
+        await window.setMaxSize(miniSize);
       }
     };
 
     resizeWindow().catch(console.error);
   }, [isActive, settings.minimum_mode_enabled]);
+
+  // Watch for unexpected window resize when in miniview mode
+  // This handles cases where OS restores window size (e.g., after sleep/wake, display changes)
+  useEffect(() => {
+    if (!settings.minimum_mode_enabled) {
+      return;
+    }
+
+    const window = getCurrentWindow();
+    let unlisten: UnlistenFn | undefined;
+    let mounted = true;
+
+    const setup = async () => {
+      try {
+        const u = await window.onResized(async ({ payload: size }) => {
+          // Use ref to get the latest isActive value, not the captured closure value
+          if (!mounted || isActiveRef.current) return;
+
+          const scaleFactor = await window.scaleFactor();
+          const logicalWidth = size.width / scaleFactor;
+          const logicalHeight = size.height / scaleFactor;
+
+          // Check again after await in case state changed
+          if (isActiveRef.current) return;
+
+          // Ensure minimum width of 240px and minimum height of 240px for visibility
+          const minSize = 240;
+          if (logicalWidth < minSize - 1 || logicalHeight < minSize - 1) {
+            const newWidth = Math.max(logicalWidth, minSize);
+            const newHeight = Math.max(logicalHeight, minSize);
+            await window.setSize(new LogicalSize(newWidth, newHeight));
+          }
+        });
+
+        if (mounted) {
+          unlisten = u;
+        } else {
+          u();
+        }
+      } catch (error) {
+        console.error('Failed to setup resize watcher:', error);
+      }
+    };
+
+    setup();
+
+    return () => {
+      mounted = false;
+      unlisten?.();
+    };
+  }, [settings.minimum_mode_enabled]);
 
   // Handle window opacity based on focus
   useWindowOpacity(settings.opacity_active, settings.opacity_inactive);
