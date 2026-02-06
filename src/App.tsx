@@ -268,10 +268,7 @@ const Dashboard = () => {
           if (isActiveRef.current) return;
 
           // If OS unexpectedly enlarged the window, restore mini view size
-          if (
-            logicalWidth > MINIMUM_VIEW_WIDTH + 1 ||
-            logicalHeight > MINIMUM_VIEW_HEIGHT + 1
-          ) {
+          if (logicalWidth > MINIMUM_VIEW_WIDTH + 1 || logicalHeight > MINIMUM_VIEW_HEIGHT + 1) {
             const miniSize = new LogicalSize(MINIMUM_VIEW_WIDTH, MINIMUM_VIEW_HEIGHT);
             await window.setSize(miniSize);
             await window.setMinSize(miniSize);

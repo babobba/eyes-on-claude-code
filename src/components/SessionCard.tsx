@@ -133,7 +133,8 @@ export const SessionCard = ({ session }: SessionCardProps) => {
   const handleDiffClick = async (type: DiffType) => {
     try {
       setError(null);
-      const baseBranch = type === 'branch' ? selectedBaseBranch || gitInfo?.default_branch : undefined;
+      const baseBranch =
+        type === 'branch' ? selectedBaseBranch || gitInfo?.default_branch : undefined;
       await openDiff(session.project_dir, type, baseBranch);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
