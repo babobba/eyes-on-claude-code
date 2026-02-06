@@ -43,11 +43,7 @@ impl DiffType {
                 if base.starts_with('-') {
                     return Err(format!("Invalid branch name: {}", base));
                 }
-                Ok(vec![
-                    "diff".to_string(),
-                    base.to_string(),
-                    "HEAD".to_string(),
-                ])
+                Ok(vec!["diff".to_string(), base.to_string()])
             }
         }
     }
@@ -251,6 +247,8 @@ pub fn get_diff_content(
     base_branch: Option<&str>,
 ) -> Result<Vec<u8>, String> {
     let git_args = diff_type.git_diff_args(base_branch)?;
+
+    log::info!(target: "eocc.difit", "get_diff_content: repo={}, base_branch={:?}, git_args={:?}", repo_path, base_branch, git_args);
 
     // Run git diff and capture output
     let git_output = Command::new("git")

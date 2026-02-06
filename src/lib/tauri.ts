@@ -19,6 +19,9 @@ export const getSettings = () => invoke<Settings>('get_settings');
 export const getRepoGitInfo = (projectDir: string) =>
   invoke<GitInfo>('get_repo_git_info', { projectDir });
 
+export const getRepoBranches = (projectDir: string) =>
+  invoke<string[]>('get_repo_branches', { projectDir });
+
 export type { DiffType };
 
 export const openDiff = (projectDir: string, diffType: DiffType, baseBranch?: string) =>
