@@ -94,6 +94,24 @@ fn check_staged_changes(repo_path: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Get list of local branches for a repository
+pub fn get_branches(repo_path: &str) -> Vec<String> {
+    let path = Path::new(repo_path);
+    if !path.exists() {
+        return Vec::new();
+    }
+
+    run_git_command(repo_path, &["branch", "--format=%(refname:short)"])
+        .map(|output| {
+            output
+                .lines()
+                .map(|line| line.trim().to_string())
+                .filter(|line| !line.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn get_default_branch(repo_path: &str) -> String {
     // 1. Try to get default branch from remote HEAD (if remote exists)
     if let Some(remote_head) =

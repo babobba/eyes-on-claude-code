@@ -7,7 +7,7 @@ use crate::difit::{
     calculate_diff_hash, get_diff_content, start_difit_server_with_content, DiffType,
     DifitProcessRegistry, HashCompareResult,
 };
-use crate::git::{get_git_info, GitInfo};
+use crate::git::{get_branches, get_git_info, GitInfo};
 use crate::persist::save_runtime_state;
 use crate::settings::save_settings;
 use crate::setup::{self, SetupStatus};
@@ -126,6 +126,11 @@ pub fn set_opacity_inactive(
 #[tauri::command]
 pub fn get_repo_git_info(project_dir: String) -> GitInfo {
     get_git_info(&project_dir)
+}
+
+#[tauri::command]
+pub fn get_repo_branches(project_dir: String) -> Vec<String> {
+    get_branches(&project_dir)
 }
 
 /// Generate a unique window label for a diff based on project and type
