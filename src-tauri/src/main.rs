@@ -24,6 +24,7 @@ use tauri::{
 };
 
 use difit::DifitProcessRegistry;
+use eocc_core::notifications::{self, NotificationSink};
 use tauri_plugin_log::RotationStrategy;
 
 use commands::{
@@ -37,7 +38,9 @@ use constants::{ICON_NORMAL, MINI_VIEW_HEIGHT, MINI_VIEW_WIDTH};
 use events::{apply_events_to_state, read_events_from_queue};
 use menu::{build_app_menu, build_tray_menu, parse_opacity_menu_id};
 use persist::{create_runtime_snapshot, load_runtime_state, save_runtime_snapshot};
-use settings::{get_app_log_dir, get_log_dir, load_settings, save_settings};
+use settings::{
+    get_app_log_dir, get_log_dir, load_notification_settings, load_settings, save_settings,
+};
 use state::{AppState, ManagedState};
 use tray::{emit_state_update, update_tray_and_badge};
 
@@ -81,7 +84,39 @@ fn create_dashboard_window(
     }
 }
 
-fn start_file_watcher(app_handle: tauri::AppHandle, state: Arc<Mutex<AppState>>) {
+fn to_core_status(
+    s: &crate::state::SessionStatus,
+) -> eocc_core::state::SessionStatus {
+    match s {
+        crate::state::SessionStatus::Active => eocc_core::state::SessionStatus::Active,
+        crate::state::SessionStatus::WaitingPermission => {
+            eocc_core::state::SessionStatus::WaitingPermission
+        }
+        crate::state::SessionStatus::WaitingInput => {
+            eocc_core::state::SessionStatus::WaitingInput
+        }
+        crate::state::SessionStatus::Completed => eocc_core::state::SessionStatus::Completed,
+    }
+}
+
+fn to_core_session_info(
+    s: &crate::state::SessionInfo,
+) -> eocc_core::state::SessionInfo {
+    eocc_core::state::SessionInfo {
+        project_name: s.project_name.clone(),
+        project_dir: s.project_dir.clone(),
+        status: to_core_status(&s.status),
+        last_event: s.last_event.clone(),
+        waiting_for: s.waiting_for.clone(),
+        tmux_pane: s.tmux_pane.clone(),
+    }
+}
+
+fn start_file_watcher(
+    app_handle: tauri::AppHandle,
+    state: Arc<Mutex<AppState>>,
+    notification_sinks: Arc<Vec<Box<dyn NotificationSink>>>,
+) {
     let log_dir = match get_log_dir(&app_handle) {
         Ok(dir) => dir,
         Err(e) => {
@@ -114,23 +149,60 @@ fn start_file_watcher(app_handle: tauri::AppHandle, state: Arc<Mutex<AppState>>)
         loop {
             match rx.recv() {
                 Ok(_event) => {
-                    // File I/O outside of lock - this is the main fix for IO blocking
                     let new_events = read_events_from_queue(&app_handle);
 
                     if !new_events.is_empty() {
-                        // Acquire lock only for state updates, then release immediately
-                        let snapshot = {
+                        let (snapshot, pending_notifications) = {
                             let Ok(mut state_guard) = state.lock() else {
                                 eprintln!("[eocc] Failed to acquire state lock in watcher");
                                 continue;
                             };
+
+                            // Capture old statuses before applying events (converted to core types)
+                            let old_statuses: std::collections::HashMap<
+                                String,
+                                eocc_core::state::SessionStatus,
+                            > = state_guard
+                                .sessions
+                                .iter()
+                                .map(|(k, v)| (k.clone(), to_core_status(&v.status)))
+                                .collect();
+
                             apply_events_to_state(&mut state_guard, &new_events);
                             update_tray_and_badge(&app_handle, &state_guard);
                             emit_state_update(&app_handle, &state_guard);
-                            create_runtime_snapshot(&state_guard)
+
+                            // Detect status transitions for notifications
+                            let pending = if state_guard.notification_settings.enabled
+                                && !notification_sinks.is_empty()
+                            {
+                                let core_sessions: std::collections::HashMap<
+                                    String,
+                                    eocc_core::state::SessionInfo,
+                                > = state_guard
+                                    .sessions
+                                    .iter()
+                                    .map(|(k, v)| (k.clone(), to_core_session_info(v)))
+                                    .collect();
+                                notifications::detect_status_transitions(
+                                    &old_statuses,
+                                    &core_sessions,
+                                    &state_guard.notification_settings.notify_on,
+                                )
+                            } else {
+                                Vec::new()
+                            };
+
+                            (create_runtime_snapshot(&state_guard), pending)
                         };
-                        // File I/O outside of lock
+
+                        // I/O outside of lock
                         save_runtime_snapshot(&app_handle, &snapshot);
+
+                        // Dispatch notifications (blocking HTTP, but we're in a background thread)
+                        for notification in &pending_notifications {
+                            notifications::dispatch(&notification_sinks, notification);
+                        }
                     }
                 }
                 Err(e) => {
@@ -198,11 +270,24 @@ fn main() {
             }
 
             // Load settings and existing events
-            {
+            let notification_sinks = {
                 let mut state_guard = state_for_tray.lock().map_err(|_| {
                     tauri::Error::Anyhow(anyhow::anyhow!("Failed to acquire state lock"))
                 })?;
                 state_guard.settings = load_settings(&app_handle);
+                state_guard.notification_settings = load_notification_settings();
+
+                // Build notification sinks from config
+                let sinks =
+                    notifications::build_sinks(&state_guard.notification_settings.channels);
+                if state_guard.notification_settings.enabled && !sinks.is_empty() {
+                    log::info!(
+                        target: "eocc.notifications",
+                        "Loaded {} notification channel(s)",
+                        sinks.len()
+                    );
+                }
+
                 // Restore previous in-memory state snapshot (sessions/recent events/cached paths)
                 if let Some(restored) = load_runtime_state(&app_handle) {
                     state_guard.sessions = restored.sessions;
@@ -211,7 +296,9 @@ fn main() {
                     // Also set the cached tmux path in the tmux module
                     tmux::set_cached_tmux_path(&restored.cached_paths.tmux_path);
                 }
-            }
+
+                Arc::new(sinks)
+            };
 
             // Drain any queued events written by the hook while app was not running
             // File I/O is done outside of lock
@@ -411,7 +498,11 @@ fn main() {
                 .build(app)?;
 
             // Start file watcher
-            start_file_watcher(app.handle().clone(), Arc::clone(&state_clone));
+            start_file_watcher(
+                app.handle().clone(),
+                Arc::clone(&state_clone),
+                notification_sinks,
+            );
 
             Ok(())
         })

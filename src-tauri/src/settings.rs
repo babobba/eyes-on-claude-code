@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use tauri::Manager;
 
 use crate::state::Settings;
+use eocc_core::notifications::NotificationSettings;
 
 /// Get the config directory using Tauri's path API
 pub fn get_config_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -55,6 +56,69 @@ pub fn load_settings(app: &tauri::AppHandle) -> Settings {
         }
     }
     Settings::default()
+}
+
+/// Get the EOCC home directory (~/.eocc)
+pub fn get_eocc_home() -> Result<PathBuf, String> {
+    let home = dirs::home_dir().ok_or("Failed to get home directory")?;
+    Ok(home.join(".eocc"))
+}
+
+fn get_notification_settings_file() -> Result<PathBuf, String> {
+    get_eocc_home().map(|dir| dir.join("notification_settings.json"))
+}
+
+pub fn load_notification_settings() -> NotificationSettings {
+    let path = match get_notification_settings_file() {
+        Ok(p) => p,
+        Err(e) => {
+            log::error!(target: "eocc.settings", "Cannot determine notification settings path: {}", e);
+            return NotificationSettings::default();
+        }
+    };
+
+    if path.exists() {
+        match fs::read_to_string(&path) {
+            Ok(content) => match serde_json::from_str(&content) {
+                Ok(settings) => return settings,
+                Err(e) => {
+                    log::error!(target: "eocc.settings", "Failed to parse notification settings: {:?}", e)
+                }
+            },
+            Err(e) => {
+                log::error!(target: "eocc.settings", "Failed to read notification settings: {:?}", e)
+            }
+        }
+    }
+    NotificationSettings::default()
+}
+
+pub fn save_notification_settings(settings: &NotificationSettings) {
+    let eocc_dir = match get_eocc_home() {
+        Ok(p) => p,
+        Err(e) => {
+            log::error!(target: "eocc.settings", "Cannot save notification settings: {}", e);
+            return;
+        }
+    };
+
+    if let Err(e) = fs::create_dir_all(&eocc_dir) {
+        log::error!(target: "eocc.settings", "Failed to create .eocc directory: {:?}", e);
+        return;
+    }
+
+    let content = match serde_json::to_string_pretty(settings) {
+        Ok(c) => c,
+        Err(e) => {
+            log::error!(target: "eocc.settings", "Failed to serialize notification settings: {:?}", e);
+            return;
+        }
+    };
+
+    let path = eocc_dir.join("notification_settings.json");
+    if let Err(e) = fs::write(&path, content) {
+        log::error!(target: "eocc.settings", "Failed to write notification settings: {:?}", e);
+    }
 }
 
 pub fn save_settings(app: &tauri::AppHandle, settings: &Settings) {

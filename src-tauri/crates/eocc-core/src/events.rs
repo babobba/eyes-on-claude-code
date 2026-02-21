@@ -540,19 +540,11 @@ mod tests {
         process_event(&mut state, perm);
 
         assert_eq!(
-            state
-                .sessions
-                .get("/home/user/project-a")
-                .unwrap()
-                .status,
+            state.sessions.get("/home/user/project-a").unwrap().status,
             SessionStatus::WaitingPermission
         );
         assert_eq!(
-            state
-                .sessions
-                .get("/home/user/project-b")
-                .unwrap()
-                .status,
+            state.sessions.get("/home/user/project-b").unwrap().status,
             SessionStatus::Active
         );
         assert_eq!(state.waiting_session_count(), 1);
@@ -563,11 +555,7 @@ mod tests {
         stop.project_name = "project-b".into();
         process_event(&mut state, stop);
         assert_eq!(
-            state
-                .sessions
-                .get("/home/user/project-b")
-                .unwrap()
-                .status,
+            state.sessions.get("/home/user/project-b").unwrap().status,
             SessionStatus::Completed
         );
         assert_eq!(state.waiting_session_count(), 1);

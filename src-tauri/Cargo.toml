@@ -7,7 +7,14 @@ license = "MIT"
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
+[features]
+default = ["desktop", "ntfy", "webhook"]
+desktop = []
+ntfy = ["eocc-core/ntfy"]
+webhook = ["eocc-core/webhook"]
+
 [dependencies]
+eocc-core = { path = "crates/eocc-core" }
 tauri = { version = "2", features = ["tray-icon", "image-png", "macos-private-api", "webview-data-url"] }
 tauri-plugin-shell = "2"
 tauri-plugin-log = "2"

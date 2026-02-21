@@ -177,12 +177,14 @@ impl AppState {
 
     pub fn to_dashboard_data(&self) -> DashboardData {
         let mut sessions: Vec<SessionInfo> = self.sessions.values().cloned().collect();
-        sessions.sort_by(|a, b| match (a.last_event.is_empty(), b.last_event.is_empty()) {
-            (true, true) => std::cmp::Ordering::Equal,
-            (true, false) => std::cmp::Ordering::Greater,
-            (false, true) => std::cmp::Ordering::Less,
-            (false, false) => b.last_event.cmp(&a.last_event),
-        });
+        sessions.sort_by(
+            |a, b| match (a.last_event.is_empty(), b.last_event.is_empty()) {
+                (true, true) => std::cmp::Ordering::Equal,
+                (true, false) => std::cmp::Ordering::Greater,
+                (false, true) => std::cmp::Ordering::Less,
+                (false, false) => b.last_event.cmp(&a.last_event),
+            },
+        );
 
         DashboardData {
             sessions,
@@ -563,12 +565,7 @@ mod tests {
     fn upsert_updates_existing_session() {
         let mut state = AppState::default();
         let event = make_event(EventType::SessionStart);
-        state.upsert_session(
-            "/proj".into(),
-            &event,
-            SessionStatus::Active,
-            String::new(),
-        );
+        state.upsert_session("/proj".into(), &event, SessionStatus::Active, String::new());
 
         let mut event2 = make_event(EventType::Notification);
         event2.timestamp = "2025-01-01T01:00:00Z".into();
@@ -591,12 +588,7 @@ mod tests {
         let mut state = AppState::default();
         let mut event = make_event(EventType::SessionStart);
         event.tmux_pane = "%0".into();
-        state.upsert_session(
-            "/proj".into(),
-            &event,
-            SessionStatus::Active,
-            String::new(),
-        );
+        state.upsert_session("/proj".into(), &event, SessionStatus::Active, String::new());
 
         let event2 = make_event(EventType::PostToolUse);
         state.upsert_session(

@@ -1,3 +1,4 @@
+use eocc_core::notifications::NotificationSettings;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
@@ -163,6 +164,7 @@ pub struct AppState {
     pub recent_events: VecDeque<EventInfo>,
     pub settings: Settings,
     pub cached_paths: CachedPaths,
+    pub notification_settings: NotificationSettings,
 }
 
 impl AppState {
