@@ -1,0 +1,13 @@
+[package]
+name = "eocc-core"
+version = "0.0.2"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+log = "0.4"
+
+[dev-dependencies]
+serde_json = "1"

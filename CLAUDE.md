@@ -205,7 +205,43 @@ Triggered by pushing a `v*` tag or manual dispatch. Builds for macOS (aarch64), 
 
 ## Testing
 
-There are no automated tests in this project. Verify changes by:
-- Running `pnpm typecheck` for TypeScript type safety
-- Running `pnpm lint` for linting
-- Running `pnpm tauri dev` for manual testing
+### Running tests
+
+```bash
+# Run all tests (frontend + Rust)
+pnpm test:all
+
+# Frontend tests (Vitest)
+pnpm test
+pnpm test:watch        # watch mode
+pnpm test:coverage     # with coverage
+
+# Rust tests (eocc-core crate)
+pnpm test:rust
+```
+
+### Frontend tests (Vitest + React Testing Library)
+
+- **Runner**: Vitest with jsdom environment, configured in `vite.config.ts`
+- **Setup**: `src/test/setup.ts` provides mocks for Tauri APIs (`invoke`, `listen`, `window`) and `AudioContext`
+- **Pattern**: Test files live alongside source as `__tests__/<name>.test.ts(x)`
+
+Test suites:
+- `src/lib/__tests__/utils.test.ts` — utility functions (emoji mapping, status classes, hook config checks, relative time formatting)
+- `src/lib/__tests__/audio.test.ts` — sound playback (completion and waiting sounds)
+- `src/lib/__tests__/tauri.test.ts` — Tauri command wrappers and event listeners
+- `src/components/__tests__/` — React component tests (Header, EmptyState, StatCard, DiffButton, MinimumView, SessionList)
+- `src/context/__tests__/useAppContext.test.tsx` — context hook behavior
+
+### Rust tests (eocc-core crate)
+
+The main Tauri crate requires system libraries (GTK, WebKit) that aren't available in all environments. Pure business logic is mirrored in `src-tauri/crates/eocc-core/`, a standalone library crate with no Tauri dependency.
+
+- `src-tauri/crates/eocc-core/src/state.rs` — type serialization, Settings defaults, AppState methods (session counting, dashboard sorting, upsert)
+- `src-tauri/crates/eocc-core/src/events.rs` — event processing, session lifecycle (start → active → waiting → completed), multi-session independence
+
+### Manual verification
+
+- `pnpm typecheck` for TypeScript type safety
+- `pnpm lint` for linting
+- `pnpm tauri dev` for runtime testing
