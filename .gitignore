@@ -5,6 +5,7 @@ local_*
 
 # Tauri build artifacts
 src-tauri/target/
+src-tauri/crates/*/target/
 node_modules/
 dist/
 
