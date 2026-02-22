@@ -93,6 +93,7 @@ pub fn load_notification_settings() -> NotificationSettings {
     NotificationSettings::default()
 }
 
+#[allow(dead_code)]
 pub fn save_notification_settings(settings: &NotificationSettings) {
     let eocc_dir = match get_eocc_home() {
         Ok(p) => p,
