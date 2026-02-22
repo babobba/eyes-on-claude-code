@@ -227,3 +227,7 @@ impl AppState {
 }
 
 pub struct ManagedState(pub Arc<Mutex<AppState>>);
+
+pub struct NotificationSinksState(
+    pub Arc<Mutex<Vec<Box<dyn eocc_core::notifications::NotificationSink>>>>,
+);

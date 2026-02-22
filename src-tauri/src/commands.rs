@@ -9,11 +9,12 @@ use crate::difit::{
 };
 use crate::git::{get_branches, get_git_info, GitInfo};
 use crate::persist::save_runtime_state;
-use crate::settings::save_settings;
+use crate::settings::{save_notification_settings, save_settings};
 use crate::setup::{self, SetupStatus};
-use crate::state::{DashboardData, ManagedState, Settings};
+use crate::state::{DashboardData, ManagedState, NotificationSinksState, Settings};
 use crate::tmux::{self, TmuxPane, TmuxPaneSize};
 use crate::tray::{emit_state_update, update_tray_and_badge};
+use eocc_core::notifications::{self, NotificationSettings};
 
 const LOCK_ERROR: &str = "Failed to acquire state lock";
 
@@ -437,6 +438,79 @@ fn spawn_difit_server_with_content(ctx: DifitSpawnContext, diff_content: Vec<u8>
         );
         ctx.handle_server_result(result);
     });
+}
+
+// ============================================================================
+// Notification commands
+// ============================================================================
+
+#[tauri::command]
+pub fn get_notification_settings(
+    state: tauri::State<'_, ManagedState>,
+) -> Result<NotificationSettings, String> {
+    let state_guard = state.0.lock().map_err(|_| LOCK_ERROR)?;
+    Ok(state_guard.notification_settings.clone())
+}
+
+#[tauri::command]
+pub fn update_notification_settings(
+    settings: NotificationSettings,
+    state: tauri::State<'_, ManagedState>,
+    sinks_state: tauri::State<'_, NotificationSinksState>,
+) -> Result<(), String> {
+    // Save to TOML file
+    save_notification_settings(&settings);
+
+    // Rebuild sinks from new config
+    let new_sinks = notifications::build_sinks(&settings.channels);
+    log::info!(
+        target: "eocc.notifications",
+        "Rebuilt {} notification channel(s), enabled={}",
+        new_sinks.len(),
+        settings.enabled
+    );
+
+    // Update sinks
+    if let Ok(mut sinks) = sinks_state.0.lock() {
+        *sinks = new_sinks;
+    }
+
+    // Update in-memory state
+    let mut state_guard = state.0.lock().map_err(|_| LOCK_ERROR)?;
+    state_guard.notification_settings = settings;
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn send_test_notification(
+    sinks_state: tauri::State<'_, NotificationSinksState>,
+    state: tauri::State<'_, ManagedState>,
+) -> Result<(), String> {
+    let state_guard = state.0.lock().map_err(|_| LOCK_ERROR)?;
+    if !state_guard.notification_settings.enabled {
+        return Err("Notifications are disabled".to_string());
+    }
+
+    let notification = notifications::SessionNotification {
+        project_name: "EOCC Test".to_string(),
+        project_dir: "/test".to_string(),
+        session_id: "test".to_string(),
+        old_status: None,
+        new_status: eocc_core::state::SessionStatus::WaitingInput,
+        message: "This is a test notification from Eyes on Claude Code".to_string(),
+        priority: notifications::NotificationPriority::Normal,
+    };
+
+    let sinks = sinks_state
+        .0
+        .lock()
+        .map_err(|_| "Failed to acquire sinks lock")?;
+    if sinks.is_empty() {
+        return Err("No notification channels configured".to_string());
+    }
+    notifications::dispatch(&sinks, &notification);
+    Ok(())
 }
 
 // ============================================================================

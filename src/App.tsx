@@ -12,6 +12,7 @@ import { useWindowOpacity } from '@/hooks/useWindowOpacity';
 import { useWindowDrag } from '@/hooks/useWindowDrag';
 import { Header } from '@/components/Header';
 import { MinimumView } from '@/components/MinimumView';
+import { NotificationSettings } from '@/components/NotificationSettings';
 import { SessionList } from '@/components/SessionList';
 import { SetupModal } from '@/components/SetupModal';
 import { TmuxViewer } from '@/components/TmuxViewer';
@@ -113,6 +114,7 @@ const DEBOUNCE_MS = 150;
 const Dashboard = () => {
   const { dashboardData, settings, isLoading, refreshData } = useAppContext();
   const [isActive, setIsActiveState] = useState(true);
+  const [showNotificationSettings, setShowNotificationSettings] = useState(false);
   const isActiveRef = useRef(true);
   const savedStateRef = useRef<SavedWindowState | null>(loadSavedWindowState());
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -338,8 +340,16 @@ const Dashboard = () => {
 
   return (
     <div className="container bg-bg-primary h-screen rounded-xl max-w-[900px] mx-auto flex flex-col p-2.5">
-      <Header sessions={dashboardData.sessions} onRefresh={refreshData} />
-      <SessionList sessions={dashboardData.sessions} />
+      <Header
+        sessions={dashboardData.sessions}
+        onRefresh={refreshData}
+        onToggleNotifications={() => setShowNotificationSettings((v) => !v)}
+      />
+      {showNotificationSettings ? (
+        <NotificationSettings onClose={() => setShowNotificationSettings(false)} />
+      ) : (
+        <SessionList sessions={dashboardData.sessions} />
+      )}
     </div>
   );
 };

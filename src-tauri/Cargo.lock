@@ -796,6 +796,7 @@ dependencies = [
  "log",
  "serde",
  "serde_json",
+ "toml 0.8.2",
  "ureq",
 ]
 

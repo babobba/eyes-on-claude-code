@@ -64,8 +64,8 @@ pub fn get_eocc_home() -> Result<PathBuf, String> {
     Ok(home.join(".eocc"))
 }
 
-fn get_notification_settings_file() -> Result<PathBuf, String> {
-    get_eocc_home().map(|dir| dir.join("notification_settings.json"))
+pub fn get_notification_settings_file() -> Result<PathBuf, String> {
+    get_eocc_home().map(|dir| dir.join("notification_settings.toml"))
 }
 
 pub fn load_notification_settings() -> NotificationSettings {
@@ -76,49 +76,19 @@ pub fn load_notification_settings() -> NotificationSettings {
             return NotificationSettings::default();
         }
     };
-
-    if path.exists() {
-        match fs::read_to_string(&path) {
-            Ok(content) => match serde_json::from_str(&content) {
-                Ok(settings) => return settings,
-                Err(e) => {
-                    log::error!(target: "eocc.settings", "Failed to parse notification settings: {:?}", e)
-                }
-            },
-            Err(e) => {
-                log::error!(target: "eocc.settings", "Failed to read notification settings: {:?}", e)
-            }
-        }
-    }
-    NotificationSettings::default()
+    eocc_core::notifications::load_settings_from_file(&path)
 }
 
-#[allow(dead_code)]
 pub fn save_notification_settings(settings: &NotificationSettings) {
-    let eocc_dir = match get_eocc_home() {
+    let path = match get_notification_settings_file() {
         Ok(p) => p,
         Err(e) => {
             log::error!(target: "eocc.settings", "Cannot save notification settings: {}", e);
             return;
         }
     };
-
-    if let Err(e) = fs::create_dir_all(&eocc_dir) {
-        log::error!(target: "eocc.settings", "Failed to create .eocc directory: {:?}", e);
-        return;
-    }
-
-    let content = match serde_json::to_string_pretty(settings) {
-        Ok(c) => c,
-        Err(e) => {
-            log::error!(target: "eocc.settings", "Failed to serialize notification settings: {:?}", e);
-            return;
-        }
-    };
-
-    let path = eocc_dir.join("notification_settings.json");
-    if let Err(e) = fs::write(&path, content) {
-        log::error!(target: "eocc.settings", "Failed to write notification settings: {:?}", e);
+    if let Err(e) = eocc_core::notifications::save_settings_to_file(&path, settings) {
+        log::error!(target: "eocc.settings", "{}", e);
     }
 }
 

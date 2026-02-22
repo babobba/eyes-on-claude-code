@@ -7,6 +7,8 @@ use crate::state::{SessionInfo, SessionStatus};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
+use std::fs;
+use std::path::Path;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -108,6 +110,38 @@ impl Default for NotificationSettings {
 pub trait NotificationSink: Send + Sync {
     fn name(&self) -> &str;
     fn send(&self, notification: &SessionNotification) -> Result<(), String>;
+}
+
+/// Load notification settings from a TOML file.
+/// Returns default settings if the file doesn't exist or can't be parsed.
+pub fn load_settings_from_file(path: &Path) -> NotificationSettings {
+    if path.exists() {
+        match fs::read_to_string(path) {
+            Ok(content) => match toml::from_str(&content) {
+                Ok(settings) => return settings,
+                Err(e) => {
+                    log::error!(target: "eocc.settings", "Failed to parse notification settings TOML: {:?}", e)
+                }
+            },
+            Err(e) => {
+                log::error!(target: "eocc.settings", "Failed to read notification settings file: {:?}", e)
+            }
+        }
+    }
+    NotificationSettings::default()
+}
+
+/// Save notification settings to a TOML file.
+/// Creates parent directories if needed.
+pub fn save_settings_to_file(path: &Path, settings: &NotificationSettings) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create settings directory: {:?}", e))?;
+    }
+    let content =
+        toml::to_string_pretty(settings).map_err(|e| format!("Failed to serialize settings: {:?}", e))?;
+    fs::write(path, content).map_err(|e| format!("Failed to write settings file: {:?}", e))?;
+    Ok(())
 }
 
 /// Compare old session statuses to new state and produce notifications for transitions
@@ -353,6 +387,89 @@ mod tests {
         let settings: NotificationSettings = serde_json::from_str(json).unwrap();
         assert!(settings.enabled);
         assert_eq!(settings.notify_on.len(), 3);
+    }
+
+    #[test]
+    fn notification_settings_toml_roundtrip() {
+        let settings = NotificationSettings {
+            enabled: true,
+            channels: vec![
+                ChannelConfig::Ntfy {
+                    server: "https://ntfy.sh".to_string(),
+                    topic: "eocc-test".to_string(),
+                    token: Some("secret".to_string()),
+                },
+                ChannelConfig::Webhook {
+                    url: "https://hooks.slack.com/xxx".to_string(),
+                },
+            ],
+            notify_on: vec![
+                SessionStatus::WaitingPermission,
+                SessionStatus::Completed,
+            ],
+        };
+        let toml_str = toml::to_string_pretty(&settings).unwrap();
+        let parsed: NotificationSettings = toml::from_str(&toml_str).unwrap();
+        assert!(parsed.enabled);
+        assert_eq!(parsed.channels.len(), 2);
+        assert_eq!(parsed.notify_on.len(), 2);
+        match &parsed.channels[0] {
+            ChannelConfig::Ntfy { server, topic, token } => {
+                assert_eq!(server, "https://ntfy.sh");
+                assert_eq!(topic, "eocc-test");
+                assert_eq!(token.as_deref(), Some("secret"));
+            }
+            _ => panic!("Expected Ntfy variant"),
+        }
+        match &parsed.channels[1] {
+            ChannelConfig::Webhook { url } => {
+                assert_eq!(url, "https://hooks.slack.com/xxx");
+            }
+            _ => panic!("Expected Webhook variant"),
+        }
+    }
+
+    #[test]
+    fn notification_settings_toml_deserialize_minimal() {
+        let toml_str = r#"enabled = true
+channels = []
+"#;
+        let settings: NotificationSettings = toml::from_str(toml_str).unwrap();
+        assert!(settings.enabled);
+        assert!(settings.channels.is_empty());
+        assert_eq!(settings.notify_on.len(), 3);
+    }
+
+    #[test]
+    fn load_settings_from_file_nonexistent() {
+        let settings = load_settings_from_file(Path::new("/tmp/nonexistent_eocc_test.toml"));
+        assert!(!settings.enabled);
+        assert!(settings.channels.is_empty());
+    }
+
+    #[test]
+    fn save_and_load_settings_file() {
+        let dir = std::env::temp_dir().join("eocc_test_settings");
+        let path = dir.join("notification_settings.toml");
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(&dir);
+
+        let settings = NotificationSettings {
+            enabled: true,
+            channels: vec![ChannelConfig::Webhook {
+                url: "https://example.com/hook".to_string(),
+            }],
+            notify_on: vec![SessionStatus::Completed],
+        };
+
+        save_settings_to_file(&path, &settings).unwrap();
+        let loaded = load_settings_from_file(&path);
+        assert!(loaded.enabled);
+        assert_eq!(loaded.channels.len(), 1);
+        assert_eq!(loaded.notify_on.len(), 1);
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(&dir);
     }
 
     #[test]

@@ -29,10 +29,11 @@ use tauri_plugin_log::RotationStrategy;
 
 use commands::{
     check_claude_settings, clear_all_sessions, get_always_on_top, get_dashboard_data,
-    get_repo_branches, get_repo_git_info, get_settings, get_setup_status, install_hook,
-    open_claude_settings, open_diff, open_tmux_viewer, remove_session, set_always_on_top,
-    set_opacity_active, set_opacity_inactive, set_window_size_for_setup, tmux_capture_pane,
-    tmux_get_pane_size, tmux_is_available, tmux_list_panes, tmux_send_keys,
+    get_notification_settings, get_repo_branches, get_repo_git_info, get_settings,
+    get_setup_status, install_hook, open_claude_settings, open_diff, open_tmux_viewer,
+    remove_session, send_test_notification, set_always_on_top, set_opacity_active,
+    set_opacity_inactive, set_window_size_for_setup, tmux_capture_pane, tmux_get_pane_size,
+    tmux_is_available, tmux_list_panes, tmux_send_keys, update_notification_settings,
 };
 use constants::{ICON_NORMAL, MINI_VIEW_HEIGHT, MINI_VIEW_WIDTH};
 use events::{apply_events_to_state, read_events_from_queue};
@@ -41,7 +42,7 @@ use persist::{create_runtime_snapshot, load_runtime_state, save_runtime_snapshot
 use settings::{
     get_app_log_dir, get_log_dir, load_notification_settings, load_settings, save_settings,
 };
-use state::{AppState, ManagedState};
+use state::{AppState, ManagedState, NotificationSinksState};
 use tray::{emit_state_update, update_tray_and_badge};
 
 fn show_dashboard(app: &tauri::AppHandle) {
@@ -84,24 +85,18 @@ fn create_dashboard_window(
     }
 }
 
-fn to_core_status(
-    s: &crate::state::SessionStatus,
-) -> eocc_core::state::SessionStatus {
+fn to_core_status(s: &crate::state::SessionStatus) -> eocc_core::state::SessionStatus {
     match s {
         crate::state::SessionStatus::Active => eocc_core::state::SessionStatus::Active,
         crate::state::SessionStatus::WaitingPermission => {
             eocc_core::state::SessionStatus::WaitingPermission
         }
-        crate::state::SessionStatus::WaitingInput => {
-            eocc_core::state::SessionStatus::WaitingInput
-        }
+        crate::state::SessionStatus::WaitingInput => eocc_core::state::SessionStatus::WaitingInput,
         crate::state::SessionStatus::Completed => eocc_core::state::SessionStatus::Completed,
     }
 }
 
-fn to_core_session_info(
-    s: &crate::state::SessionInfo,
-) -> eocc_core::state::SessionInfo {
+fn to_core_session_info(s: &crate::state::SessionInfo) -> eocc_core::state::SessionInfo {
     eocc_core::state::SessionInfo {
         project_name: s.project_name.clone(),
         project_dir: s.project_dir.clone(),
@@ -115,7 +110,7 @@ fn to_core_session_info(
 fn start_file_watcher(
     app_handle: tauri::AppHandle,
     state: Arc<Mutex<AppState>>,
-    notification_sinks: Arc<Vec<Box<dyn NotificationSink>>>,
+    notification_sinks: Arc<Mutex<Vec<Box<dyn NotificationSink>>>>,
 ) {
     let log_dir = match get_log_dir(&app_handle) {
         Ok(dir) => dir,
@@ -173,9 +168,12 @@ fn start_file_watcher(
                             emit_state_update(&app_handle, &state_guard);
 
                             // Detect status transitions for notifications
-                            let pending = if state_guard.notification_settings.enabled
-                                && !notification_sinks.is_empty()
-                            {
+                            let sinks_active = state_guard.notification_settings.enabled
+                                && notification_sinks
+                                    .lock()
+                                    .map(|s| !s.is_empty())
+                                    .unwrap_or(false);
+                            let pending = if sinks_active {
                                 let core_sessions: std::collections::HashMap<
                                     String,
                                     eocc_core::state::SessionInfo,
@@ -200,8 +198,12 @@ fn start_file_watcher(
                         save_runtime_snapshot(&app_handle, &snapshot);
 
                         // Dispatch notifications (blocking HTTP, but we're in a background thread)
-                        for notification in &pending_notifications {
-                            notifications::dispatch(&notification_sinks, notification);
+                        if !pending_notifications.is_empty() {
+                            if let Ok(sinks) = notification_sinks.lock() {
+                                for notification in &pending_notifications {
+                                    notifications::dispatch(&sinks, notification);
+                                }
+                            }
                         }
                     }
                 }
@@ -251,6 +253,10 @@ fn main() {
             install_hook,
             check_claude_settings,
             open_claude_settings,
+            // Notification commands
+            get_notification_settings,
+            update_notification_settings,
+            send_test_notification,
             // Tmux commands
             tmux_is_available,
             tmux_list_panes,
@@ -278,8 +284,7 @@ fn main() {
                 state_guard.notification_settings = load_notification_settings();
 
                 // Build notification sinks from config
-                let sinks =
-                    notifications::build_sinks(&state_guard.notification_settings.channels);
+                let sinks = notifications::build_sinks(&state_guard.notification_settings.channels);
                 if state_guard.notification_settings.enabled && !sinks.is_empty() {
                     log::info!(
                         target: "eocc.notifications",
@@ -297,8 +302,11 @@ fn main() {
                     tmux::set_cached_tmux_path(&restored.cached_paths.tmux_path);
                 }
 
-                Arc::new(sinks)
+                Arc::new(Mutex::new(sinks))
             };
+
+            // Register notification sinks as managed state for commands
+            app.manage(NotificationSinksState(Arc::clone(&notification_sinks)));
 
             // Drain any queued events written by the hook while app was not running
             // File I/O is done outside of lock

@@ -78,6 +78,27 @@ export interface TmuxPaneSize {
   height: number;
 }
 
+// Notification channel configuration (tagged union matching Rust ChannelConfig)
+export interface NtfyChannel {
+  type: 'ntfy';
+  server: string;
+  topic: string;
+  token?: string | null;
+}
+
+export interface WebhookChannel {
+  type: 'webhook';
+  url: string;
+}
+
+export type ChannelConfig = NtfyChannel | WebhookChannel;
+
+export interface NotificationSettings {
+  enabled: boolean;
+  channels: ChannelConfig[];
+  notify_on: SessionStatus[];
+}
+
 // Status of each individual hook type
 export interface HookStatus {
   session_start: boolean;

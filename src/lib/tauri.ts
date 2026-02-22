@@ -5,6 +5,7 @@ import type {
   DashboardData,
   DiffType,
   GitInfo,
+  NotificationSettings,
   Settings,
   SetupStatus,
   TmuxPane,
@@ -26,6 +27,13 @@ export type { DiffType };
 
 export const openDiff = (projectDir: string, diffType: DiffType, baseBranch?: string) =>
   invoke('open_diff', { projectDir, diffType, baseBranch });
+
+// Notification commands
+export const getNotificationSettings = () =>
+  invoke<NotificationSettings>('get_notification_settings');
+export const updateNotificationSettings = (settings: NotificationSettings) =>
+  invoke('update_notification_settings', { settings });
+export const sendTestNotification = () => invoke('send_test_notification');
 
 // Setup commands
 export const getSetupStatus = () => invoke<SetupStatus>('get_setup_status');
