@@ -138,10 +138,15 @@ async function main() {
   // Always write to local file (even when webhook is configured, for resilience)
   appendLine(logFile, payloadJson);
 
-  // Dispatch notifications directly from the hook. This works on remote machines
-  // and containers without requiring the EOCC desktop app to be running.
-  const waitingInfo = message || toolName;
-  tryDispatchNotification(home, eventType, notificationType, projectDir, projectName, waitingInfo);
+  // Only dispatch notifications for events that can produce notification-worthy
+  // transitions. post_tool_use and user_prompt_submit fire very frequently (every
+  // tool call / user message) and almost always map to "active" which is rarely
+  // in notify_on. Skipping them avoids reading TOML + JSON on every tool call.
+  const NOTIFY_EVENTS = new Set(["notification", "stop", "session_start", "session_end"]);
+  if (NOTIFY_EVENTS.has(eventType)) {
+    const waitingInfo = message || toolName;
+    tryDispatchNotification(home, eventType, notificationType, projectDir, projectName, waitingInfo);
+  }
 }
 
 function postWebhook(url, body) {
