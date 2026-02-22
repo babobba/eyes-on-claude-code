@@ -108,7 +108,7 @@ async function main() {
     tmuxPath = whichCommand("tmux");
   }
 
-  const payload = {
+  const eventPayload = {
     timestamp,
     event: eventType,
     matcher,
@@ -121,22 +121,23 @@ async function main() {
     tmux_pane: tmuxPane,
     npx_path: npxPath,
     tmux_path: tmuxPath,
-    transport_type: transportType,
-    transport_host: transportHost,
-    transport_port: transportPort,
-    transport_user: transportUser,
   };
 
-  const payloadJson = JSON.stringify(payload);
-
-  // Send via webhook if EOCC_WEBHOOK_URL is configured
+  // Webhook payload includes transport info so the desktop app knows how to
+  // connect back to remote sessions. The local JSONL doesn't need it.
   const webhookUrl = process.env.EOCC_WEBHOOK_URL;
   if (webhookUrl) {
-    postWebhook(webhookUrl, payloadJson);
+    const webhookPayload = {
+      ...eventPayload,
+      transport_type: transportType,
+      transport_host: transportHost,
+      transport_port: transportPort,
+      transport_user: transportUser,
+    };
+    postWebhook(webhookUrl, JSON.stringify(webhookPayload));
   }
 
-  // Always write to local file (even when webhook is configured, for resilience)
-  appendLine(logFile, payloadJson);
+  appendLine(logFile, JSON.stringify(eventPayload));
 
   // Only dispatch notifications for events that can produce notification-worthy
   // transitions. post_tool_use and user_prompt_submit fire very frequently (every
