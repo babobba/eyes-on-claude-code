@@ -76,6 +76,14 @@ async function main() {
   const projectName = basename(projectDir) || "unknown";
   const tmuxPane = process.env.TMUX_PANE || "";
 
+  // Detect network transport for remote sessions
+  const sshConnection = process.env.SSH_CONNECTION || "";
+  const sshParts = sshConnection ? sshConnection.split(" ") : [];
+  const transportType = process.env.EOCC_TRANSPORT || (sshConnection ? "ssh" : "local");
+  const transportHost = process.env.EOCC_TRANSPORT_HOST || (sshParts.length >= 3 ? sshParts[2] : "");
+  const transportPort = process.env.EOCC_TRANSPORT_PORT || (sshParts.length >= 4 ? sshParts[3] : "22");
+  const transportUser = process.env.EOCC_TRANSPORT_USER || process.env.USER || "";
+
   const sessionId = getString(rawInput, "session_id", "unknown");
   const message = getString(rawInput, "message", "");
   let notificationType = getString(rawInput, "notification_type", "");
@@ -109,6 +117,10 @@ async function main() {
     tmux_pane: tmuxPane,
     npx_path: npxPath,
     tmux_path: tmuxPath,
+    transport_type: transportType,
+    transport_host: transportHost,
+    transport_port: transportPort,
+    transport_user: transportUser,
   };
 
   const payloadJson = JSON.stringify(payload);

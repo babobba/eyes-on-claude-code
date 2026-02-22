@@ -13,6 +13,7 @@ use crate::settings::{save_notification_settings, save_settings};
 use crate::setup::{self, SetupStatus};
 use crate::state::{
     DashboardData, ManagedState, NotificationHistoryState, NotificationSinksState, Settings,
+    Transport,
 };
 use crate::tmux::{self, TmuxPane, TmuxPaneSize};
 use crate::tray::{emit_state_update, update_tray_and_badge};
@@ -611,8 +612,27 @@ pub fn open_claude_settings() -> Result<(), String> {
 // Tmux commands
 // ============================================================================
 
+/// Look up the transport for a session by project_dir.
+fn get_transport_for_session(
+    state: &tauri::State<'_, ManagedState>,
+    project_dir: Option<&str>,
+) -> Transport {
+    if let Some(dir) = project_dir {
+        if let Ok(state_guard) = state.0.lock() {
+            if let Some(session) = state_guard.sessions.get(dir) {
+                return session.transport.clone();
+            }
+        }
+    }
+    Transport::Local {}
+}
+
 #[tauri::command]
-pub fn open_tmux_viewer(pane_id: String, app: tauri::AppHandle) -> Result<(), String> {
+pub fn open_tmux_viewer(
+    pane_id: String,
+    project_dir: Option<String>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
 
@@ -627,7 +647,10 @@ pub fn open_tmux_viewer(pane_id: String, app: tauri::AppHandle) -> Result<(), St
         return Ok(());
     }
 
-    let url = format!("index.html?tmux_pane={}", urlencoding::encode(&pane_id));
+    let mut url = format!("index.html?tmux_pane={}", urlencoding::encode(&pane_id));
+    if let Some(ref dir) = project_dir {
+        url.push_str(&format!("&project_dir={}", urlencoding::encode(dir)));
+    }
 
     WebviewWindowBuilder::new(&app, &window_label, WebviewUrl::App(url.into()))
         .title(format!("tmux - {}", pane_id))
@@ -652,16 +675,32 @@ pub fn tmux_list_panes() -> Result<Vec<TmuxPane>, String> {
 }
 
 #[tauri::command]
-pub fn tmux_capture_pane(pane_id: String) -> Result<String, String> {
-    tmux::capture_pane(&pane_id)
+pub fn tmux_capture_pane(
+    pane_id: String,
+    project_dir: Option<String>,
+    state: tauri::State<'_, ManagedState>,
+) -> Result<String, String> {
+    let transport = get_transport_for_session(&state, project_dir.as_deref());
+    tmux::capture_pane_with_transport(&pane_id, &transport)
 }
 
 #[tauri::command]
-pub fn tmux_send_keys(pane_id: String, keys: String) -> Result<(), String> {
-    tmux::send_keys(&pane_id, &keys)
+pub fn tmux_send_keys(
+    pane_id: String,
+    keys: String,
+    project_dir: Option<String>,
+    state: tauri::State<'_, ManagedState>,
+) -> Result<(), String> {
+    let transport = get_transport_for_session(&state, project_dir.as_deref());
+    tmux::send_keys_with_transport(&pane_id, &keys, &transport)
 }
 
 #[tauri::command]
-pub fn tmux_get_pane_size(pane_id: String) -> Result<TmuxPaneSize, String> {
-    tmux::get_pane_size(&pane_id)
+pub fn tmux_get_pane_size(
+    pane_id: String,
+    project_dir: Option<String>,
+    state: tauri::State<'_, ManagedState>,
+) -> Result<TmuxPaneSize, String> {
+    let transport = get_transport_for_session(&state, project_dir.as_deref());
+    tmux::get_pane_size_with_transport(&pane_id, &transport)
 }

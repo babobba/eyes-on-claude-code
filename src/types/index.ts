@@ -14,6 +14,38 @@ export type EventType =
   | 'user_prompt_submit'
   | 'unknown';
 
+// Network transport types for remote session support
+export type TransportType = 'local' | 'ssh' | 'mosh' | 'tailscale';
+
+export interface TransportLocal {
+  type: 'local';
+}
+
+export interface TransportSsh {
+  type: 'ssh';
+  host: string;
+  port: number;
+  user?: string | null;
+  identity_file?: string | null;
+}
+
+export interface TransportMosh {
+  type: 'mosh';
+  host: string;
+  port: number;
+  user?: string | null;
+  mosh_port?: number | null;
+}
+
+export interface TransportTailscale {
+  type: 'tailscale';
+  host: string;
+  user?: string | null;
+  identity_file?: string | null;
+}
+
+export type Transport = TransportLocal | TransportSsh | TransportMosh | TransportTailscale;
+
 export interface SessionInfo {
   project_name: string;
   project_dir: string;
@@ -21,6 +53,7 @@ export interface SessionInfo {
   last_event: string;
   waiting_for: string;
   tmux_pane: string;
+  transport: Transport;
 }
 
 export interface EventInfo {

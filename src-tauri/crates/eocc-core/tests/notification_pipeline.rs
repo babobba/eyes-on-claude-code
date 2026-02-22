@@ -26,6 +26,10 @@ fn make_event(
         tmux_pane: String::new(),
         npx_path: String::new(),
         tmux_path: String::new(),
+        transport_type: String::new(),
+        transport_host: String::new(),
+        transport_port: String::new(),
+        transport_user: String::new(),
     }
 }
 
@@ -49,6 +53,10 @@ fn make_notification_event(
         tmux_pane: String::new(),
         npx_path: String::new(),
         tmux_path: String::new(),
+        transport_type: String::new(),
+        transport_host: String::new(),
+        transport_port: String::new(),
+        transport_user: String::new(),
     }
 }
 

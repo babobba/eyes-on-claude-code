@@ -365,6 +365,11 @@ function App() {
     return params.get('tmux_pane');
   }, []);
 
+  const tmuxProjectDir = useMemo(() => {
+    const params = new URLSearchParams(window.location.search);
+    return params.get('project_dir') ?? undefined;
+  }, []);
+
   // Check setup status on mount (skip for tmux viewer windows)
   useEffect(() => {
     // Skip for tmux viewer windows - they render before this check
@@ -395,7 +400,7 @@ function App() {
 
   // Render tmux viewer if pane_id is in URL
   if (tmuxPaneId) {
-    return <TmuxViewer paneId={tmuxPaneId} />;
+    return <TmuxViewer paneId={tmuxPaneId} projectDir={tmuxProjectDir} />;
   }
 
   // Wait for setup check before showing anything

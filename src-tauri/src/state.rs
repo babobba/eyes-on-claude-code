@@ -3,6 +3,41 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
+fn default_ssh_port() -> u16 {
+    22
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "type")]
+pub enum Transport {
+    Local {},
+    Ssh {
+        host: String,
+        #[serde(default = "default_ssh_port")]
+        port: u16,
+        user: Option<String>,
+        identity_file: Option<String>,
+    },
+    Mosh {
+        host: String,
+        #[serde(default = "default_ssh_port")]
+        port: u16,
+        user: Option<String>,
+        mosh_port: Option<u16>,
+    },
+    Tailscale {
+        host: String,
+        user: Option<String>,
+        identity_file: Option<String>,
+    },
+}
+
+impl Default for Transport {
+    fn default() -> Self {
+        Transport::Local {}
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EventType {
@@ -46,6 +81,47 @@ pub struct EventInfo {
     pub npx_path: String,
     #[serde(default)]
     pub tmux_path: String,
+    #[serde(default)]
+    pub transport_type: String,
+    #[serde(default)]
+    pub transport_host: String,
+    #[serde(default)]
+    pub transport_port: String,
+    #[serde(default)]
+    pub transport_user: String,
+}
+
+impl EventInfo {
+    pub fn to_transport(&self) -> Transport {
+        match self.transport_type.as_str() {
+            "ssh" => Transport::Ssh {
+                host: self.transport_host.clone(),
+                port: self.transport_port.parse().unwrap_or(22),
+                user: non_empty(&self.transport_user),
+                identity_file: None,
+            },
+            "mosh" => Transport::Mosh {
+                host: self.transport_host.clone(),
+                port: self.transport_port.parse().unwrap_or(22),
+                user: non_empty(&self.transport_user),
+                mosh_port: None,
+            },
+            "tailscale" => Transport::Tailscale {
+                host: self.transport_host.clone(),
+                user: non_empty(&self.transport_user),
+                identity_file: None,
+            },
+            _ => Transport::Local {},
+        }
+    }
+}
+
+fn non_empty(s: &str) -> Option<String> {
+    if s.is_empty() {
+        None
+    } else {
+        Some(s.to_string())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -58,6 +134,8 @@ pub struct SessionInfo {
     pub waiting_for: String,
     #[serde(default)]
     pub tmux_pane: String,
+    #[serde(default)]
+    pub transport: Transport,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -205,6 +283,7 @@ impl AppState {
         status: SessionStatus,
         waiting_for: String,
     ) {
+        let transport = event.to_transport();
         self.sessions
             .entry(key)
             .and_modify(|s| {
@@ -214,6 +293,9 @@ impl AppState {
                 if !event.tmux_pane.is_empty() {
                     s.tmux_pane = event.tmux_pane.clone();
                 }
+                if !matches!(transport, Transport::Local {}) {
+                    s.transport = transport.clone();
+                }
             })
             .or_insert_with(|| SessionInfo {
                 project_name: event.project_name.clone(),
@@ -222,6 +304,7 @@ impl AppState {
                 last_event: event.timestamp.clone(),
                 waiting_for,
                 tmux_pane: event.tmux_pane.clone(),
+                transport,
             });
     }
 }

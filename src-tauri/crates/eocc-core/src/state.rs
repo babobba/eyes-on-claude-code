@@ -1,6 +1,41 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 
+fn default_ssh_port() -> u16 {
+    22
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "type")]
+pub enum Transport {
+    Local {},
+    Ssh {
+        host: String,
+        #[serde(default = "default_ssh_port")]
+        port: u16,
+        user: Option<String>,
+        identity_file: Option<String>,
+    },
+    Mosh {
+        host: String,
+        #[serde(default = "default_ssh_port")]
+        port: u16,
+        user: Option<String>,
+        mosh_port: Option<u16>,
+    },
+    Tailscale {
+        host: String,
+        user: Option<String>,
+        identity_file: Option<String>,
+    },
+}
+
+impl Default for Transport {
+    fn default() -> Self {
+        Transport::Local {}
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EventType {
@@ -44,6 +79,47 @@ pub struct EventInfo {
     pub npx_path: String,
     #[serde(default)]
     pub tmux_path: String,
+    #[serde(default)]
+    pub transport_type: String,
+    #[serde(default)]
+    pub transport_host: String,
+    #[serde(default)]
+    pub transport_port: String,
+    #[serde(default)]
+    pub transport_user: String,
+}
+
+impl EventInfo {
+    pub fn to_transport(&self) -> Transport {
+        match self.transport_type.as_str() {
+            "ssh" => Transport::Ssh {
+                host: self.transport_host.clone(),
+                port: self.transport_port.parse().unwrap_or(22),
+                user: non_empty(&self.transport_user),
+                identity_file: None,
+            },
+            "mosh" => Transport::Mosh {
+                host: self.transport_host.clone(),
+                port: self.transport_port.parse().unwrap_or(22),
+                user: non_empty(&self.transport_user),
+                mosh_port: None,
+            },
+            "tailscale" => Transport::Tailscale {
+                host: self.transport_host.clone(),
+                user: non_empty(&self.transport_user),
+                identity_file: None,
+            },
+            _ => Transport::Local {},
+        }
+    }
+}
+
+fn non_empty(s: &str) -> Option<String> {
+    if s.is_empty() {
+        None
+    } else {
+        Some(s.to_string())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,6 +132,8 @@ pub struct SessionInfo {
     pub waiting_for: String,
     #[serde(default)]
     pub tmux_pane: String,
+    #[serde(default)]
+    pub transport: Transport,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -199,6 +277,7 @@ impl AppState {
         status: SessionStatus,
         waiting_for: String,
     ) {
+        let transport = event.to_transport();
         self.sessions
             .entry(key)
             .and_modify(|s| {
@@ -208,6 +287,9 @@ impl AppState {
                 if !event.tmux_pane.is_empty() {
                     s.tmux_pane = event.tmux_pane.clone();
                 }
+                if !matches!(transport, Transport::Local {}) {
+                    s.transport = transport.clone();
+                }
             })
             .or_insert_with(|| SessionInfo {
                 project_name: event.project_name.clone(),
@@ -216,6 +298,7 @@ impl AppState {
                 last_event: event.timestamp.clone(),
                 waiting_for,
                 tmux_pane: event.tmux_pane.clone(),
+                transport,
             });
     }
 }
@@ -238,7 +321,103 @@ mod tests {
             tmux_pane: String::new(),
             npx_path: String::new(),
             tmux_path: String::new(),
+            transport_type: String::new(),
+            transport_host: String::new(),
+            transport_port: String::new(),
+            transport_user: String::new(),
         }
+    }
+
+    // -- Transport serde --
+
+    #[test]
+    fn transport_default_is_local() {
+        assert_eq!(Transport::default(), Transport::Local {});
+    }
+
+    #[test]
+    fn transport_ssh_serializes_roundtrip() {
+        let transport = Transport::Ssh {
+            host: "myhost.example.com".into(),
+            port: 2222,
+            user: Some("deploy".into()),
+            identity_file: Some("/home/user/.ssh/id_ed25519".into()),
+        };
+        let json = serde_json::to_string(&transport).unwrap();
+        let deserialized: Transport = serde_json::from_str(&json).unwrap();
+        assert_eq!(transport, deserialized);
+    }
+
+    #[test]
+    fn transport_mosh_serializes_roundtrip() {
+        let transport = Transport::Mosh {
+            host: "remote.dev".into(),
+            port: 22,
+            user: None,
+            mosh_port: Some(60001),
+        };
+        let json = serde_json::to_string(&transport).unwrap();
+        let deserialized: Transport = serde_json::from_str(&json).unwrap();
+        assert_eq!(transport, deserialized);
+    }
+
+    #[test]
+    fn transport_tailscale_serializes_roundtrip() {
+        let transport = Transport::Tailscale {
+            host: "100.64.1.2".into(),
+            user: Some("admin".into()),
+            identity_file: None,
+        };
+        let json = serde_json::to_string(&transport).unwrap();
+        let deserialized: Transport = serde_json::from_str(&json).unwrap();
+        assert_eq!(transport, deserialized);
+    }
+
+    #[test]
+    fn transport_local_serializes_roundtrip() {
+        let transport = Transport::Local {};
+        let json = serde_json::to_string(&transport).unwrap();
+        let deserialized: Transport = serde_json::from_str(&json).unwrap();
+        assert_eq!(transport, deserialized);
+    }
+
+    #[test]
+    fn transport_ssh_default_port() {
+        let json = r#"{"type":"ssh","host":"example.com"}"#;
+        let transport: Transport = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            transport,
+            Transport::Ssh {
+                host: "example.com".into(),
+                port: 22,
+                user: None,
+                identity_file: None,
+            }
+        );
+    }
+
+    #[test]
+    fn event_to_transport_ssh() {
+        let mut event = make_event(EventType::SessionStart);
+        event.transport_type = "ssh".into();
+        event.transport_host = "devbox.example.com".into();
+        event.transport_port = "2222".into();
+        event.transport_user = "deploy".into();
+        assert_eq!(
+            event.to_transport(),
+            Transport::Ssh {
+                host: "devbox.example.com".into(),
+                port: 2222,
+                user: Some("deploy".into()),
+                identity_file: None,
+            }
+        );
+    }
+
+    #[test]
+    fn event_to_transport_local_fallback() {
+        let event = make_event(EventType::SessionStart);
+        assert_eq!(event.to_transport(), Transport::Local {});
     }
 
     // -- EventType serde --
@@ -438,6 +617,7 @@ mod tests {
                 last_event: String::new(),
                 waiting_for: String::new(),
                 tmux_pane: String::new(),
+                transport: Transport::default(),
             },
         );
         state.sessions.insert(
@@ -449,6 +629,7 @@ mod tests {
                 last_event: String::new(),
                 waiting_for: String::new(),
                 tmux_pane: String::new(),
+                transport: Transport::default(),
             },
         );
         assert_eq!(state.waiting_session_count(), 2);
@@ -466,6 +647,7 @@ mod tests {
                 last_event: String::new(),
                 waiting_for: String::new(),
                 tmux_pane: String::new(),
+                transport: Transport::default(),
             },
         );
         state.sessions.insert(
@@ -477,6 +659,7 @@ mod tests {
                 last_event: String::new(),
                 waiting_for: String::new(),
                 tmux_pane: String::new(),
+                transport: Transport::default(),
             },
         );
         assert_eq!(state.waiting_session_count(), 0);
@@ -494,6 +677,7 @@ mod tests {
                 last_event: "2025-01-01T00:00:00Z".into(),
                 waiting_for: String::new(),
                 tmux_pane: String::new(),
+                transport: Transport::default(),
             },
         );
         state.sessions.insert(
@@ -505,6 +689,7 @@ mod tests {
                 last_event: "2025-01-02T00:00:00Z".into(),
                 waiting_for: String::new(),
                 tmux_pane: String::new(),
+                transport: Transport::default(),
             },
         );
 
@@ -525,6 +710,7 @@ mod tests {
                 last_event: String::new(),
                 waiting_for: String::new(),
                 tmux_pane: String::new(),
+                transport: Transport::default(),
             },
         );
         state.sessions.insert(
@@ -536,6 +722,7 @@ mod tests {
                 last_event: "2025-01-01T00:00:00Z".into(),
                 waiting_for: String::new(),
                 tmux_pane: String::new(),
+                transport: Transport::default(),
             },
         );
 

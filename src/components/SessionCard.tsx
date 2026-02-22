@@ -147,7 +147,7 @@ export const SessionCard = ({ session }: SessionCardProps) => {
     if (!session.tmux_pane) return;
     try {
       setError(null);
-      await openTmuxViewer(session.tmux_pane);
+      await openTmuxViewer(session.tmux_pane, session.project_dir);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       setError(`Failed to open tmux viewer: ${message}`);
@@ -173,6 +173,11 @@ export const SessionCard = ({ session }: SessionCardProps) => {
           <div className="font-mono text-text-secondary truncate text-[0.5rem]">
             {session.project_dir}
           </div>
+          {session.transport.type !== 'local' && (
+            <span className="inline-flex items-center gap-0.5 text-[0.5rem] px-1 py-0.5 rounded bg-blue-900/30 text-blue-300 mt-0.5">
+              {session.transport.type} {'host' in session.transport ? session.transport.host : ''}
+            </span>
+          )}
           {relativeTime && <div className="text-text-secondary text-[0.5rem]">{relativeTime}</div>}
           {session.waiting_for && (
             <div className="text-warning bg-warning/10 rounded inline-block mt-1 truncate max-w-full text-[0.5rem] py-0.5 px-1">

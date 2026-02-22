@@ -22,6 +22,7 @@ pub fn process_event(state: &mut AppState, event: EventInfo) {
         EventType::SessionStart => {
             state.cached_paths.update_from_event(&event);
             set_cached_tmux_path(&event.tmux_path);
+            let transport = event.to_transport();
             state.sessions.insert(
                 key,
                 SessionInfo {
@@ -31,6 +32,7 @@ pub fn process_event(state: &mut AppState, event: EventInfo) {
                     last_event: event.timestamp.clone(),
                     waiting_for: String::new(),
                     tmux_pane: event.tmux_pane,
+                    transport,
                 },
             );
         }

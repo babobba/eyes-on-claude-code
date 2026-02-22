@@ -400,6 +400,7 @@ mod tests {
             last_event: "2025-01-01T00:00:00Z".to_string(),
             waiting_for: String::new(),
             tmux_pane: String::new(),
+            transport: crate::state::Transport::default(),
         }
     }
 

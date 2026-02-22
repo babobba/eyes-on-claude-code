@@ -78,9 +78,11 @@ export const bringDiffWindowsToFront = async (): Promise<void> => {
 // Tmux commands
 export const tmuxIsAvailable = () => invoke<boolean>('tmux_is_available');
 export const tmuxListPanes = () => invoke<TmuxPane[]>('tmux_list_panes');
-export const tmuxCapturePane = (paneId: string) => invoke<string>('tmux_capture_pane', { paneId });
-export const tmuxSendKeys = (paneId: string, keys: string) =>
-  invoke('tmux_send_keys', { paneId, keys });
-export const tmuxGetPaneSize = (paneId: string) =>
-  invoke<TmuxPaneSize>('tmux_get_pane_size', { paneId });
-export const openTmuxViewer = (paneId: string) => invoke('open_tmux_viewer', { paneId });
+export const tmuxCapturePane = (paneId: string, projectDir?: string) =>
+  invoke<string>('tmux_capture_pane', { paneId, projectDir });
+export const tmuxSendKeys = (paneId: string, keys: string, projectDir?: string) =>
+  invoke('tmux_send_keys', { paneId, keys, projectDir });
+export const tmuxGetPaneSize = (paneId: string, projectDir?: string) =>
+  invoke<TmuxPaneSize>('tmux_get_pane_size', { paneId, projectDir });
+export const openTmuxViewer = (paneId: string, projectDir?: string) =>
+  invoke('open_tmux_viewer', { paneId, projectDir });
