@@ -5,6 +5,8 @@
  * Usage: eocc-hook <event_type> [matcher]
  *
  * This script is called from ~/.claude/settings.json and logs events from all Claude Code sessions.
+ * It also dispatches notifications directly to configured channels (ntfy, webhook, pushover),
+ * making it work on remote machines and containers without the EOCC desktop app.
  */
 
 const fs = require("node:fs");
@@ -80,8 +82,10 @@ async function main() {
   const sshConnection = process.env.SSH_CONNECTION || "";
   const sshParts = sshConnection ? sshConnection.split(" ") : [];
   const transportType = process.env.EOCC_TRANSPORT || (sshConnection ? "ssh" : "local");
-  const transportHost = process.env.EOCC_TRANSPORT_HOST || (sshParts.length >= 3 ? sshParts[2] : "");
-  const transportPort = process.env.EOCC_TRANSPORT_PORT || (sshParts.length >= 4 ? sshParts[3] : "22");
+  const transportHost =
+    process.env.EOCC_TRANSPORT_HOST || (sshParts.length >= 3 ? sshParts[2] : "");
+  const transportPort =
+    process.env.EOCC_TRANSPORT_PORT || (sshParts.length >= 4 ? sshParts[3] : "22");
   const transportUser = process.env.EOCC_TRANSPORT_USER || process.env.USER || "";
 
   const sessionId = getString(rawInput, "session_id", "unknown");
@@ -133,6 +137,11 @@ async function main() {
 
   // Always write to local file (even when webhook is configured, for resilience)
   appendLine(logFile, payloadJson);
+
+  // Dispatch notifications directly from the hook. This works on remote machines
+  // and containers without requiring the EOCC desktop app to be running.
+  const waitingInfo = message || toolName;
+  tryDispatchNotification(home, eventType, notificationType, projectDir, projectName, waitingInfo);
 }
 
 function postWebhook(url, body) {
@@ -157,6 +166,371 @@ function postWebhook(url, body) {
     req.end();
   } catch {
     // Best-effort: never fail the hook call
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Direct notification dispatch
+//
+// Mirrors the Rust notification pipeline so the hook can send alerts (ntfy,
+// webhook, pushover) from wherever Claude Code runs — remote servers,
+// containers, or the local machine — without the EOCC desktop app.
+// Desktop notifications are skipped (no display server on headless hosts).
+// ---------------------------------------------------------------------------
+
+const STATUS_EMOJI = {
+  active: "\u{1F7E2}",
+  waiting_permission: "\u{1F510}",
+  waiting_input: "\u{23F3}",
+  completed: "\u{2705}",
+};
+
+const STATUS_LABELS = {
+  active: "Active",
+  waiting_permission: "Waiting for permission",
+  waiting_input: "Waiting for input",
+  completed: "Completed",
+};
+
+const NTFY_TAGS = {
+  active: "green_circle",
+  waiting_permission: "lock",
+  waiting_input: "hourglass",
+  completed: "white_check_mark",
+};
+
+function mapEventToStatus(eventType, notificationType) {
+  switch (eventType) {
+    case "session_start":
+    case "post_tool_use":
+    case "user_prompt_submit":
+      return "active";
+    case "session_end":
+      return null;
+    case "stop":
+      return "completed";
+    case "notification":
+      if (notificationType === "permission_prompt") return "waiting_permission";
+      if (notificationType === "idle_prompt") return "waiting_input";
+      return "active";
+    default:
+      return undefined;
+  }
+}
+
+function mapPriority(status) {
+  if (status === "waiting_permission" || status === "waiting_input") return "high";
+  if (status === "completed") return "normal";
+  return "low";
+}
+
+// Minimal TOML parser — handles the subset used by notification_settings.toml.
+function parseTomlValue(raw) {
+  const v = raw.trim();
+  if (v === "true") return true;
+  if (v === "false") return false;
+  if (/^-?\d+$/.test(v)) return parseInt(v, 10);
+  const dq = v.match(/^"((?:[^"\\]|\\.)*)"$/);
+  if (dq) return dq[1].replace(/\\"/g, '"').replace(/\\\\/g, "\\");
+  const sq = v.match(/^'([^']*)'$/);
+  if (sq) return sq[1];
+  if (v.startsWith("[") && v.endsWith("]")) {
+    const inner = v.slice(1, -1).trim();
+    if (!inner) return [];
+    return inner.split(",").map((s) => parseTomlValue(s));
+  }
+  return v;
+}
+
+function parseNotificationSettings(filePath) {
+  try {
+    const text = fs.readFileSync(filePath, "utf8");
+    const settings = {
+      enabled: false,
+      channels: [],
+      notify_on: ["waiting_permission", "waiting_input", "completed"],
+      project_rules: [],
+      cooldown_seconds: null,
+      title_template: null,
+      body_template: null,
+    };
+    let currentSection = null;
+    let currentItem = null;
+
+    function flushItem() {
+      if (!currentItem) return;
+      if (currentSection === "channels") settings.channels.push(currentItem);
+      else if (currentSection === "project_rules") settings.project_rules.push(currentItem);
+    }
+
+    for (const rawLine of text.split("\n")) {
+      // Strip comments that are outside quoted strings
+      let line = "";
+      let inStr = false;
+      let q = null;
+      for (let i = 0; i < rawLine.length; i++) {
+        const c = rawLine[i];
+        if (!inStr && (c === '"' || c === "'")) {
+          inStr = true;
+          q = c;
+        } else if (inStr && c === q) {
+          inStr = false;
+        } else if (!inStr && c === "#") {
+          break;
+        }
+        line += c;
+      }
+      line = line.trim();
+      if (!line) continue;
+
+      if (line === "[[channels]]") {
+        flushItem();
+        currentSection = "channels";
+        currentItem = {};
+        continue;
+      }
+      if (line === "[[project_rules]]") {
+        flushItem();
+        currentSection = "project_rules";
+        currentItem = {};
+        continue;
+      }
+
+      const eqIdx = line.indexOf("=");
+      if (eqIdx === -1) continue;
+      const key = line.slice(0, eqIdx).trim();
+      const value = parseTomlValue(line.slice(eqIdx + 1));
+
+      if (currentSection && currentItem) {
+        currentItem[key] = value;
+      } else {
+        settings[key] = value;
+      }
+    }
+    flushItem();
+    return settings;
+  } catch {
+    return null;
+  }
+}
+
+// Glob-like pattern matching — mirrors the Rust `pattern_matches` function.
+function patternMatches(pattern, filePath) {
+  if (!pattern) return false;
+  if (pattern === filePath) return true;
+  if (pattern.startsWith("**/")) {
+    const suffix = pattern.slice(3);
+    return filePath.endsWith(suffix) || filePath.includes("/" + suffix);
+  }
+  if (pattern.startsWith("*") && pattern.endsWith("*") && pattern.length > 2) {
+    return filePath.includes(pattern.slice(1, -1));
+  }
+  if (pattern.endsWith("/**")) {
+    return filePath.startsWith(pattern.slice(0, -3));
+  }
+  if (pattern.endsWith("*")) {
+    return filePath.startsWith(pattern.slice(0, -1));
+  }
+  return false;
+}
+
+function resolveForProject(settings, projectDir) {
+  for (const rule of settings.project_rules || []) {
+    if (patternMatches(rule.pattern, projectDir)) {
+      const enabled = rule.enabled !== undefined && rule.enabled !== null ? rule.enabled : settings.enabled;
+      const notifyOn = rule.notify_on || settings.notify_on;
+      return { enabled, notifyOn };
+    }
+  }
+  return { enabled: settings.enabled, notifyOn: settings.notify_on };
+}
+
+function applyTemplate(template, vars) {
+  return template
+    .replace(/\{project_name\}/g, vars.projectName)
+    .replace(/\{project_dir\}/g, vars.projectDir)
+    .replace(/\{status\}/g, vars.statusLabel)
+    .replace(/\{emoji\}/g, vars.emoji)
+    .replace(/\{message\}/g, vars.message)
+    .replace(/\{priority\}/g, vars.priority);
+}
+
+function buildNotification(settings, projectName, projectDir, status, message) {
+  const emoji = STATUS_EMOJI[status] || "";
+  const statusLabel = STATUS_LABELS[status] || status;
+  const priority = mapPriority(status);
+
+  const vars = { projectName, projectDir, statusLabel, emoji, message: message || "", priority };
+
+  const title = settings.title_template
+    ? applyTemplate(settings.title_template, vars)
+    : `${emoji} ${projectName} - ${statusLabel}`;
+
+  const body = settings.body_template
+    ? applyTemplate(settings.body_template, vars)
+    : message || statusLabel;
+
+  return { title, body, priority, status, projectName, projectDir };
+}
+
+// Hook state: tracks per-session status and cooldown timestamps.
+// Stored at ~/.eocc/hook_state.json.
+function loadHookState(stateFile) {
+  try {
+    return JSON.parse(fs.readFileSync(stateFile, "utf8"));
+  } catch {
+    return { sessions: {} };
+  }
+}
+
+function saveHookState(stateFile, state) {
+  try {
+    const tmpFile = stateFile + ".tmp." + process.pid;
+    fs.writeFileSync(tmpFile, JSON.stringify(state), "utf8");
+    fs.renameSync(tmpFile, stateFile);
+  } catch {
+    // Best effort
+  }
+}
+
+// Generic HTTP POST — fire-and-forget, never throws.
+function httpPost(url, headers, body) {
+  try {
+    const parsedUrl = new URL(url);
+    const mod = parsedUrl.protocol === "https:" ? require("node:https") : require("node:http");
+    const options = {
+      hostname: parsedUrl.hostname,
+      port: parsedUrl.port || (parsedUrl.protocol === "https:" ? 443 : 80),
+      path: parsedUrl.pathname + parsedUrl.search,
+      method: "POST",
+      headers: { ...headers, "Content-Length": Buffer.byteLength(body) },
+      timeout: 5000,
+    };
+    const req = mod.request(options, () => {});
+    req.on("error", () => {});
+    req.on("timeout", () => req.destroy());
+    req.write(body);
+    req.end();
+  } catch {
+    // Best effort
+  }
+}
+
+function sendNtfy(channel, notification) {
+  const server = (channel.server || "").replace(/\/+$/, "");
+  const url = `${server}/${channel.topic}`;
+  const priorityMap = { high: "high", normal: "default", low: "low" };
+  const headers = {
+    Title: notification.title,
+    Priority: priorityMap[notification.priority] || "default",
+    Tags: NTFY_TAGS[notification.status] || "",
+  };
+  if (channel.token) headers["Authorization"] = `Bearer ${channel.token}`;
+  httpPost(url, headers, notification.body);
+}
+
+function sendWebhookChannel(channel, notification) {
+  const payload = JSON.stringify({
+    text: `${notification.title}\n${notification.body}`,
+    project_name: notification.projectName,
+    project_dir: notification.projectDir,
+    status: notification.status,
+    priority: notification.priority,
+  });
+  httpPost(channel.url, { "Content-Type": "application/json" }, payload);
+}
+
+function sendPushover(channel, notification) {
+  const priorityMap = { high: "1", normal: "0", low: "-1" };
+  const enc = (s) => encodeURIComponent(s);
+  let form =
+    `token=${enc(channel.app_token)}&user=${enc(channel.user_key)}` +
+    `&title=${enc(notification.title)}&message=${enc(notification.body)}` +
+    `&priority=${priorityMap[notification.priority] || "0"}`;
+  if (channel.device) form += `&device=${enc(channel.device)}`;
+  httpPost("https://api.pushover.net/1/messages.json", {
+    "Content-Type": "application/x-www-form-urlencoded",
+  }, form);
+}
+
+function dispatchToChannels(settings, notification) {
+  for (const channel of settings.channels || []) {
+    try {
+      switch (channel.type) {
+        case "ntfy":
+          sendNtfy(channel, notification);
+          break;
+        case "webhook":
+          sendWebhookChannel(channel, notification);
+          break;
+        case "pushover":
+          sendPushover(channel, notification);
+          break;
+        // "desktop" is intentionally skipped — the hook often runs on headless
+        // machines where no display server is available.
+      }
+    } catch {
+      // Best effort, continue to next channel
+    }
+  }
+}
+
+function tryDispatchNotification(home, eventType, notificationType, projectDir, projectName, waitingInfo) {
+  try {
+    const settingsFile = path.join(home, ".eocc", "notification_settings.toml");
+    const stateFile = path.join(home, ".eocc", "hook_state.json");
+
+    const settings = parseNotificationSettings(settingsFile);
+    if (!settings || !settings.enabled) return;
+    if (!settings.channels || settings.channels.length === 0) return;
+
+    const newStatus = mapEventToStatus(eventType, notificationType);
+    if (newStatus === undefined) return;
+
+    const sessionKey = projectDir || projectName;
+    const hookState = loadHookState(stateFile);
+
+    if (newStatus === null) {
+      delete hookState.sessions[sessionKey];
+      saveHookState(stateFile, hookState);
+      return;
+    }
+
+    const prev = hookState.sessions[sessionKey];
+    const oldStatus = prev ? prev.status : null;
+
+    // Update stored status
+    hookState.sessions[sessionKey] = {
+      status: newStatus,
+      last_notified: prev ? prev.last_notified : null,
+    };
+
+    if (oldStatus === newStatus) {
+      saveHookState(stateFile, hookState);
+      return;
+    }
+
+    const { enabled, notifyOn } = resolveForProject(settings, projectDir);
+    if (!enabled || !notifyOn.includes(newStatus)) {
+      saveHookState(stateFile, hookState);
+      return;
+    }
+
+    if (settings.cooldown_seconds && prev && prev.last_notified) {
+      const elapsed = (Date.now() - prev.last_notified) / 1000;
+      if (elapsed < settings.cooldown_seconds) {
+        saveHookState(stateFile, hookState);
+        return;
+      }
+    }
+
+    const notification = buildNotification(settings, projectName, projectDir, newStatus, waitingInfo);
+    dispatchToChannels(settings, notification);
+
+    hookState.sessions[sessionKey].last_notified = Date.now();
+    saveHookState(stateFile, hookState);
+  } catch {
+    // Never fail the hook call
   }
 }
 
