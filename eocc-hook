@@ -145,7 +145,7 @@ async function main() {
   const NOTIFY_EVENTS = new Set(["notification", "stop", "session_start", "session_end"]);
   if (NOTIFY_EVENTS.has(eventType)) {
     const waitingInfo = message || toolName;
-    tryDispatchNotification(home, eventType, notificationType, projectDir, projectName, waitingInfo);
+    await tryDispatchNotification(home, eventType, notificationType, projectDir, projectName, waitingInfo);
   }
 }
 
@@ -398,27 +398,53 @@ function saveHookState(stateFile, state) {
   }
 }
 
-// Generic HTTP POST — fire-and-forget, never throws.
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// HTTP POST that returns a Promise with delivery status.
 function httpPost(url, headers, body) {
-  try {
-    const parsedUrl = new URL(url);
-    const mod = parsedUrl.protocol === "https:" ? require("node:https") : require("node:http");
-    const options = {
-      hostname: parsedUrl.hostname,
-      port: parsedUrl.port || (parsedUrl.protocol === "https:" ? 443 : 80),
-      path: parsedUrl.pathname + parsedUrl.search,
-      method: "POST",
-      headers: { ...headers, "Content-Length": Buffer.byteLength(body) },
-      timeout: 5000,
-    };
-    const req = mod.request(options, () => {});
-    req.on("error", () => {});
-    req.on("timeout", () => req.destroy());
-    req.write(body);
-    req.end();
-  } catch {
-    // Best effort
+  return new Promise((resolve) => {
+    try {
+      const parsedUrl = new URL(url);
+      const mod = parsedUrl.protocol === "https:" ? require("node:https") : require("node:http");
+      const options = {
+        hostname: parsedUrl.hostname,
+        port: parsedUrl.port || (parsedUrl.protocol === "https:" ? 443 : 80),
+        path: parsedUrl.pathname + parsedUrl.search,
+        method: "POST",
+        headers: { ...headers, "Content-Length": Buffer.byteLength(body) },
+        timeout: 5000,
+      };
+      const req = mod.request(options, (res) => {
+        res.resume();
+        resolve({ ok: res.statusCode >= 200 && res.statusCode < 300, status: res.statusCode });
+      });
+      req.on("error", (err) => resolve({ ok: false, error: err.message }));
+      req.on("timeout", () => {
+        req.destroy();
+        resolve({ ok: false, error: "timeout" });
+      });
+      req.write(body);
+      req.end();
+    } catch (err) {
+      resolve({ ok: false, error: err.message || "request_failed" });
+    }
+  });
+}
+
+const MAX_RETRIES = 3;
+const RETRY_BASE_MS = 1000;
+
+// Retries failed requests up to MAX_RETRIES times with logarithmic backoff.
+// Delays: ~693ms, ~1099ms, ~1386ms (ln(2)*1000, ln(3)*1000, ln(4)*1000).
+async function httpPostWithRetry(url, headers, body) {
+  let result = await httpPost(url, headers, body);
+  for (let attempt = 1; attempt <= MAX_RETRIES && !result.ok; attempt++) {
+    await sleep(Math.log(attempt + 1) * RETRY_BASE_MS);
+    result = await httpPost(url, headers, body);
   }
+  return result;
 }
 
 function sendNtfy(channel, notification) {
@@ -431,7 +457,7 @@ function sendNtfy(channel, notification) {
     Tags: NTFY_TAGS[notification.status] || "",
   };
   if (channel.token) headers["Authorization"] = `Bearer ${channel.token}`;
-  httpPost(url, headers, notification.body);
+  return httpPostWithRetry(url, headers, notification.body);
 }
 
 function sendWebhookChannel(channel, notification) {
@@ -442,7 +468,7 @@ function sendWebhookChannel(channel, notification) {
     status: notification.status,
     priority: notification.priority,
   });
-  httpPost(channel.url, { "Content-Type": "application/json" }, payload);
+  return httpPostWithRetry(channel.url, { "Content-Type": "application/json" }, payload);
 }
 
 function sendPushover(channel, notification) {
@@ -453,23 +479,24 @@ function sendPushover(channel, notification) {
     `&title=${enc(notification.title)}&message=${enc(notification.body)}` +
     `&priority=${priorityMap[notification.priority] || "0"}`;
   if (channel.device) form += `&device=${enc(channel.device)}`;
-  httpPost("https://api.pushover.net/1/messages.json", {
+  return httpPostWithRetry("https://api.pushover.net/1/messages.json", {
     "Content-Type": "application/x-www-form-urlencoded",
   }, form);
 }
 
-function dispatchToChannels(settings, notification) {
+async function dispatchToChannels(settings, notification) {
+  const promises = [];
   for (const channel of settings.channels || []) {
     try {
       switch (channel.type) {
         case "ntfy":
-          sendNtfy(channel, notification);
+          promises.push(sendNtfy(channel, notification));
           break;
         case "webhook":
-          sendWebhookChannel(channel, notification);
+          promises.push(sendWebhookChannel(channel, notification));
           break;
         case "pushover":
-          sendPushover(channel, notification);
+          promises.push(sendPushover(channel, notification));
           break;
         // "desktop" is intentionally skipped — the hook often runs on headless
         // machines where no display server is available.
@@ -478,9 +505,10 @@ function dispatchToChannels(settings, notification) {
       // Best effort, continue to next channel
     }
   }
+  return Promise.all(promises);
 }
 
-function tryDispatchNotification(home, eventType, notificationType, projectDir, projectName, waitingInfo) {
+async function tryDispatchNotification(home, eventType, notificationType, projectDir, projectName, waitingInfo) {
   try {
     const settingsFile = path.join(home, ".eocc", "notification_settings.toml");
     const stateFile = path.join(home, ".eocc", "hook_state.json");
@@ -530,7 +558,7 @@ function tryDispatchNotification(home, eventType, notificationType, projectDir, 
     }
 
     const notification = buildNotification(settings, projectName, projectDir, newStatus, waitingInfo);
-    dispatchToChannels(settings, notification);
+    await dispatchToChannels(settings, notification);
 
     hookState.sessions[sessionKey].last_notified = Date.now();
     saveHookState(stateFile, hookState);
