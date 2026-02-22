@@ -145,7 +145,8 @@ async function main() {
   const NOTIFY_EVENTS = new Set(["notification", "stop", "session_start", "session_end"]);
   if (NOTIFY_EVENTS.has(eventType)) {
     const waitingInfo = message || toolName;
-    await tryDispatchNotification(home, eventType, notificationType, projectDir, projectName, waitingInfo);
+    const transport = { type: transportType, host: transportHost, port: transportPort, user: transportUser };
+    await tryDispatchNotification(home, eventType, notificationType, projectDir, projectName, waitingInfo, transport);
   }
 }
 
@@ -350,6 +351,24 @@ function resolveForProject(settings, projectDir) {
   return { enabled: settings.enabled, notifyOn: settings.notify_on };
 }
 
+// Builds a tappable URI from transport info.
+// ssh:// and mosh:// are handled by mobile terminals (Blink, Termius, Prompt).
+function buildConnectUrl(transport) {
+  if (!transport || !transport.host || transport.type === "local") return "";
+  const user = transport.user ? `${transport.user}@` : "";
+  switch (transport.type) {
+    case "ssh":
+    case "tailscale": {
+      const port = transport.port && transport.port !== "22" ? `:${transport.port}` : "";
+      return `ssh://${user}${transport.host}${port}`;
+    }
+    case "mosh":
+      return `mosh://${user}${transport.host}`;
+    default:
+      return "";
+  }
+}
+
 function applyTemplate(template, vars) {
   return template
     .replace(/\{project_name\}/g, vars.projectName)
@@ -357,25 +376,36 @@ function applyTemplate(template, vars) {
     .replace(/\{status\}/g, vars.statusLabel)
     .replace(/\{emoji\}/g, vars.emoji)
     .replace(/\{message\}/g, vars.message)
-    .replace(/\{priority\}/g, vars.priority);
+    .replace(/\{priority\}/g, vars.priority)
+    .replace(/\{connect_url\}/g, vars.connectUrl)
+    .replace(/\{transport_type\}/g, vars.transportType);
 }
 
-function buildNotification(settings, projectName, projectDir, status, message) {
+function buildNotification(settings, projectName, projectDir, status, message, transport) {
   const emoji = STATUS_EMOJI[status] || "";
   const statusLabel = STATUS_LABELS[status] || status;
   const priority = mapPriority(status);
+  const connectUrl = buildConnectUrl(transport);
+  const transportType = (transport && transport.type) || "local";
 
-  const vars = { projectName, projectDir, statusLabel, emoji, message: message || "", priority };
+  const vars = {
+    projectName, projectDir, statusLabel, emoji,
+    message: message || "", priority, connectUrl, transportType,
+  };
 
   const title = settings.title_template
     ? applyTemplate(settings.title_template, vars)
     : `${emoji} ${projectName} - ${statusLabel}`;
 
-  const body = settings.body_template
-    ? applyTemplate(settings.body_template, vars)
+  const defaultBody = connectUrl
+    ? `${message || statusLabel}\n${connectUrl}`
     : message || statusLabel;
 
-  return { title, body, priority, status, projectName, projectDir };
+  const body = settings.body_template
+    ? applyTemplate(settings.body_template, vars)
+    : defaultBody;
+
+  return { title, body, priority, status, projectName, projectDir, connectUrl };
 }
 
 // Hook state: tracks per-session status and cooldown timestamps.
@@ -456,6 +486,7 @@ function sendNtfy(channel, notification) {
     Priority: priorityMap[notification.priority] || "default",
     Tags: NTFY_TAGS[notification.status] || "",
   };
+  if (notification.connectUrl) headers["Click"] = notification.connectUrl;
   if (channel.token) headers["Authorization"] = `Bearer ${channel.token}`;
   return httpPostWithRetry(url, headers, notification.body);
 }
@@ -467,6 +498,7 @@ function sendWebhookChannel(channel, notification) {
     project_dir: notification.projectDir,
     status: notification.status,
     priority: notification.priority,
+    connect_url: notification.connectUrl || null,
   });
   return httpPostWithRetry(channel.url, { "Content-Type": "application/json" }, payload);
 }
@@ -479,6 +511,7 @@ function sendPushover(channel, notification) {
     `&title=${enc(notification.title)}&message=${enc(notification.body)}` +
     `&priority=${priorityMap[notification.priority] || "0"}`;
   if (channel.device) form += `&device=${enc(channel.device)}`;
+  if (notification.connectUrl) form += `&url=${enc(notification.connectUrl)}&url_title=Connect`;
   return httpPostWithRetry("https://api.pushover.net/1/messages.json", {
     "Content-Type": "application/x-www-form-urlencoded",
   }, form);
@@ -508,7 +541,7 @@ async function dispatchToChannels(settings, notification) {
   return Promise.all(promises);
 }
 
-async function tryDispatchNotification(home, eventType, notificationType, projectDir, projectName, waitingInfo) {
+async function tryDispatchNotification(home, eventType, notificationType, projectDir, projectName, waitingInfo, transport) {
   try {
     const settingsFile = path.join(home, ".eocc", "notification_settings.toml");
     const stateFile = path.join(home, ".eocc", "hook_state.json");
@@ -557,7 +590,7 @@ async function tryDispatchNotification(home, eventType, notificationType, projec
       }
     }
 
-    const notification = buildNotification(settings, projectName, projectDir, newStatus, waitingInfo);
+    const notification = buildNotification(settings, projectName, projectDir, newStatus, waitingInfo, transport);
     await dispatchToChannels(settings, notification);
 
     hookState.sessions[sessionKey].last_notified = Date.now();
