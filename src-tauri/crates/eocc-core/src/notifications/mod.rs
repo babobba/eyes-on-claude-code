@@ -42,20 +42,40 @@ pub struct SessionNotification {
     pub new_status: SessionStatus,
     pub message: String,
     pub priority: NotificationPriority,
+    #[serde(skip)]
+    pub title_template: Option<String>,
+    #[serde(skip)]
+    pub body_template: Option<String>,
 }
 
 impl SessionNotification {
     pub fn title(&self) -> String {
+        if let Some(ref t) = self.title_template {
+            return self.apply_template(t);
+        }
         let emoji = self.new_status.emoji();
         format!("{} {} - {}", emoji, self.project_name, self.status_label())
     }
 
     pub fn body(&self) -> String {
+        if let Some(ref t) = self.body_template {
+            return self.apply_template(t);
+        }
         if self.message.is_empty() {
             self.status_label()
         } else {
             self.message.clone()
         }
+    }
+
+    fn apply_template(&self, template: &str) -> String {
+        template
+            .replace("{project_name}", &self.project_name)
+            .replace("{project_dir}", &self.project_dir)
+            .replace("{status}", &self.status_label())
+            .replace("{emoji}", self.new_status.emoji())
+            .replace("{message}", &self.message)
+            .replace("{priority}", &self.priority.to_string())
     }
 
     fn status_label(&self) -> String {
@@ -108,6 +128,12 @@ pub struct NotificationSettings {
     pub notify_on: Vec<SessionStatus>,
     #[serde(default)]
     pub project_rules: Vec<ProjectRule>,
+    #[serde(default)]
+    pub cooldown_seconds: Option<u64>,
+    #[serde(default)]
+    pub title_template: Option<String>,
+    #[serde(default)]
+    pub body_template: Option<String>,
 }
 
 impl NotificationSettings {
@@ -170,6 +196,9 @@ impl Default for NotificationSettings {
             channels: Vec::new(),
             notify_on: Self::default_notify_on(),
             project_rules: Vec::new(),
+            cooldown_seconds: None,
+            title_template: None,
+            body_template: None,
         }
     }
 }
@@ -250,6 +279,8 @@ pub fn detect_status_transitions(
                 new_status: session.status.clone(),
                 message: session.waiting_for.clone(),
                 priority,
+                title_template: settings.title_template.clone(),
+                body_template: settings.body_template.clone(),
             });
         }
     }
@@ -378,6 +409,9 @@ mod tests {
             channels: Vec::new(),
             notify_on,
             project_rules: Vec::new(),
+            cooldown_seconds: None,
+            title_template: None,
+            body_template: None,
         }
     }
 
@@ -487,6 +521,8 @@ mod tests {
             new_status: SessionStatus::WaitingPermission,
             message: "Approve bash command".to_string(),
             priority: NotificationPriority::High,
+            title_template: None,
+            body_template: None,
         };
         assert_eq!(n.title(), "🔐 my-project - Waiting for permission");
         assert_eq!(n.body(), "Approve bash command");
@@ -502,6 +538,8 @@ mod tests {
             new_status: SessionStatus::Completed,
             message: String::new(),
             priority: NotificationPriority::Normal,
+            title_template: None,
+            body_template: None,
         };
         assert_eq!(n.body(), "Completed");
     }
@@ -539,6 +577,9 @@ mod tests {
             ],
             notify_on: vec![SessionStatus::WaitingPermission, SessionStatus::Completed],
             project_rules: Vec::new(),
+            cooldown_seconds: None,
+            title_template: None,
+            body_template: None,
         };
         let toml_str = toml::to_string_pretty(&settings).unwrap();
         let parsed: NotificationSettings = toml::from_str(&toml_str).unwrap();
@@ -597,6 +638,9 @@ channels = []
             }],
             notify_on: vec![SessionStatus::Completed],
             project_rules: Vec::new(),
+            cooldown_seconds: None,
+            title_template: None,
+            body_template: None,
         };
 
         save_settings_to_file(&path, &settings).unwrap();
@@ -708,6 +752,9 @@ channels = []
                 enabled: Some(false),
                 notify_on: None,
             }],
+            cooldown_seconds: None,
+            title_template: None,
+            body_template: None,
         };
         let notifications = detect_status_transitions(&old, &new_sessions, &settings);
         assert_eq!(notifications.len(), 0);
@@ -731,6 +778,9 @@ channels = []
                 enabled: None,
                 notify_on: Some(vec![SessionStatus::Active]),
             }],
+            cooldown_seconds: None,
+            title_template: None,
+            body_template: None,
         };
         let notifications = detect_status_transitions(&old, &new_sessions, &settings);
         assert_eq!(notifications.len(), 1);
@@ -804,6 +854,9 @@ channels = []
                 enabled: Some(true),
                 notify_on: Some(vec![SessionStatus::Active, SessionStatus::Completed]),
             }],
+            cooldown_seconds: None,
+            title_template: None,
+            body_template: None,
         };
         let toml_str = toml::to_string_pretty(&settings).unwrap();
         let parsed: NotificationSettings = toml::from_str(&toml_str).unwrap();
@@ -823,9 +876,88 @@ channels = []
             new_status: SessionStatus::Completed,
             message: String::new(),
             priority: NotificationPriority::Normal,
+            title_template: None,
+            body_template: None,
         };
         let record = dispatch(&sinks, &notification);
         assert_eq!(record.project_name, "proj");
         assert!(record.channels.is_empty());
+    }
+
+    #[test]
+    fn title_template_overrides_default() {
+        let n = SessionNotification {
+            project_name: "my-proj".to_string(),
+            project_dir: "/home/user/my-proj".to_string(),
+            session_id: "s1".to_string(),
+            old_status: None,
+            new_status: SessionStatus::Completed,
+            message: "done".to_string(),
+            priority: NotificationPriority::Normal,
+            title_template: Some("{project_name} is now {status}".to_string()),
+            body_template: None,
+        };
+        assert_eq!(n.title(), "my-proj is now Completed");
+        assert_eq!(n.body(), "done");
+    }
+
+    #[test]
+    fn body_template_overrides_default() {
+        let n = SessionNotification {
+            project_name: "proj".to_string(),
+            project_dir: "/proj".to_string(),
+            session_id: "s1".to_string(),
+            old_status: None,
+            new_status: SessionStatus::WaitingPermission,
+            message: "approve bash".to_string(),
+            priority: NotificationPriority::High,
+            title_template: None,
+            body_template: Some("{emoji} {message} ({priority})".to_string()),
+        };
+        assert_eq!(n.title(), "🔐 proj - Waiting for permission");
+        assert_eq!(n.body(), "🔐 approve bash (high)");
+    }
+
+    #[test]
+    fn templates_propagated_from_detect_transitions() {
+        let old = HashMap::new();
+        let mut new_sessions = HashMap::new();
+        new_sessions.insert(
+            "/proj".to_string(),
+            make_session("proj", SessionStatus::Completed),
+        );
+        let settings = NotificationSettings {
+            enabled: true,
+            channels: Vec::new(),
+            notify_on: vec![SessionStatus::Completed],
+            project_rules: Vec::new(),
+            cooldown_seconds: None,
+            title_template: Some("{project_name}: {status}".to_string()),
+            body_template: Some("{message}".to_string()),
+        };
+        let notifications = detect_status_transitions(&old, &new_sessions, &settings);
+        assert_eq!(notifications.len(), 1);
+        assert_eq!(notifications[0].title(), "proj: Completed");
+    }
+
+    #[test]
+    fn cooldown_and_template_settings_roundtrip() {
+        let settings = NotificationSettings {
+            enabled: true,
+            channels: Vec::new(),
+            notify_on: vec![SessionStatus::Completed],
+            project_rules: Vec::new(),
+            cooldown_seconds: Some(30),
+            title_template: Some("{emoji} {project_name}".to_string()),
+            body_template: Some("{status}: {message}".to_string()),
+        };
+        let toml_str = toml::to_string_pretty(&settings).unwrap();
+        let parsed: NotificationSettings = toml::from_str(&toml_str).unwrap();
+        assert_eq!(parsed.cooldown_seconds, Some(30));
+        assert_eq!(
+            parsed.title_template.as_deref(),
+            Some("{emoji} {project_name}")
+        );
+        assert_eq!(parsed.body_template.as_deref(), Some("{status}: {message}"));
     }
 }

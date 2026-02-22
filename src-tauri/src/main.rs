@@ -14,6 +14,7 @@ mod tmux;
 mod tray;
 
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
+use std::collections::HashMap;
 use std::fs;
 use std::sync::{Arc, Mutex};
 use tauri::{
@@ -114,6 +115,7 @@ fn start_file_watcher(
     notification_sinks: Arc<Mutex<Vec<Box<dyn NotificationSink>>>>,
     notification_history: Arc<Mutex<notifications::history::NotificationHistory>>,
 ) {
+    use std::time::Instant;
     let log_dir = match get_log_dir(&app_handle) {
         Ok(dir) => dir,
         Err(e) => {
@@ -123,6 +125,9 @@ fn start_file_watcher(
     };
 
     std::thread::spawn(move || {
+        // Track last notification time per session for cooldown
+        let mut last_notified: HashMap<String, Instant> = HashMap::new();
+
         if let Err(e) = fs::create_dir_all(&log_dir) {
             eprintln!("[eocc] Failed to create log directory: {:?}", e);
             return;
@@ -149,7 +154,7 @@ fn start_file_watcher(
                     let new_events = read_events_from_queue(&app_handle);
 
                     if !new_events.is_empty() {
-                        let (snapshot, pending_notifications) = {
+                        let (snapshot, pending_notifications, cooldown_secs) = {
                             let Ok(mut state_guard) = state.lock() else {
                                 eprintln!("[eocc] Failed to acquire state lock in watcher");
                                 continue;
@@ -175,6 +180,7 @@ fn start_file_watcher(
                                     .lock()
                                     .map(|s| !s.is_empty())
                                     .unwrap_or(false);
+                            let cooldown_secs = state_guard.notification_settings.cooldown_seconds;
                             let pending = if sinks_active {
                                 let core_sessions: std::collections::HashMap<
                                     String,
@@ -193,7 +199,11 @@ fn start_file_watcher(
                                 Vec::new()
                             };
 
-                            (create_runtime_snapshot(&state_guard), pending)
+                            (
+                                create_runtime_snapshot(&state_guard),
+                                pending,
+                                cooldown_secs,
+                            )
                         };
 
                         // I/O outside of lock
@@ -202,8 +212,23 @@ fn start_file_watcher(
                         // Dispatch notifications (blocking HTTP, but we're in a background thread)
                         if !pending_notifications.is_empty() {
                             if let Ok(sinks) = notification_sinks.lock() {
+                                let now = Instant::now();
                                 for notification in &pending_notifications {
+                                    // Apply cooldown: skip if we notified this session recently
+                                    if let Some(cd) = cooldown_secs {
+                                        if cd > 0 {
+                                            if let Some(last) =
+                                                last_notified.get(&notification.session_id)
+                                            {
+                                                if now.duration_since(*last).as_secs() < cd {
+                                                    continue;
+                                                }
+                                            }
+                                        }
+                                    }
                                     let record = notifications::dispatch(&sinks, notification);
+                                    last_notified
+                                        .insert(notification.session_id.clone(), Instant::now());
                                     if let Ok(mut history) = notification_history.lock() {
                                         history.push(record);
                                     }

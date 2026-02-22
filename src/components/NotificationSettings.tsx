@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import type {
   NotificationSettings as NotificationSettingsType,
   ChannelConfig,
@@ -39,11 +39,21 @@ export const NotificationSettings = ({ onClose }: NotificationSettingsProps) => 
   const [message, setMessage] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
   const [tab, setTab] = useState<Tab>('settings');
   const [history, setHistory] = useState<NotificationRecord[]>([]);
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const showToast = useCallback((text: string, type: 'success' | 'error') => {
+    setMessage({ text, type });
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setMessage(null), 3000);
+  }, []);
 
   useEffect(() => {
     getNotificationSettings()
       .then(setSettings)
       .catch((err) => console.error('Failed to load notification settings:', err));
+    return () => {
+      if (toastTimer.current) clearTimeout(toastTimer.current);
+    };
   }, []);
 
   useEffect(() => {
@@ -54,28 +64,29 @@ export const NotificationSettings = ({ onClose }: NotificationSettingsProps) => 
     }
   }, [tab]);
 
-  const save = useCallback(async (updated: NotificationSettingsType) => {
-    setSaving(true);
-    setMessage(null);
-    try {
-      await updateNotificationSettings(updated);
-      setSettings(updated);
-      setMessage({ text: 'Settings saved', type: 'success' });
-    } catch (err) {
-      setMessage({ text: `Failed to save: ${err}`, type: 'error' });
-    } finally {
-      setSaving(false);
-    }
-  }, []);
+  const save = useCallback(
+    async (updated: NotificationSettingsType) => {
+      setSaving(true);
+      try {
+        await updateNotificationSettings(updated);
+        setSettings(updated);
+        showToast('Settings saved', 'success');
+      } catch (err) {
+        showToast(`Failed to save: ${err}`, 'error');
+      } finally {
+        setSaving(false);
+      }
+    },
+    [showToast]
+  );
 
   const handleTest = async () => {
     setTesting(true);
-    setMessage(null);
     try {
       await sendTestNotification();
-      setMessage({ text: 'Test notification sent', type: 'success' });
+      showToast('Test notification sent', 'success');
     } catch (err) {
-      setMessage({ text: `${err}`, type: 'error' });
+      showToast(`${err}`, 'error');
     } finally {
       setTesting(false);
     }
@@ -205,6 +216,25 @@ export const NotificationSettings = ({ onClose }: NotificationSettingsProps) => 
             </div>
           </div>
 
+          {/* Cooldown */}
+          <div className="flex items-center gap-2">
+            <span className="text-text-secondary">Cooldown:</span>
+            <input
+              type="number"
+              min={0}
+              placeholder="seconds"
+              value={settings.cooldown_seconds ?? ''}
+              onChange={(e) =>
+                setSettings({
+                  ...settings,
+                  cooldown_seconds: e.target.value ? Number(e.target.value) : null,
+                })
+              }
+              className={`${inputClass} w-20`}
+            />
+            <span className="text-text-secondary text-[0.5rem]">sec between notifications</span>
+          </div>
+
           {/* Channels */}
           <div className="flex flex-col gap-1.5">
             <div className="flex justify-between items-center">
@@ -232,6 +262,29 @@ export const NotificationSettings = ({ onClose }: NotificationSettingsProps) => 
                 onRemove={() => removeChannel(i)}
               />
             ))}
+          </div>
+
+          {/* Templates */}
+          <div className="flex flex-col gap-1.5">
+            <span className="text-text-secondary">Templates:</span>
+            <input
+              type="text"
+              placeholder="Title: {emoji} {project_name} - {status}"
+              value={settings.title_template ?? ''}
+              onChange={(e) => setSettings({ ...settings, title_template: e.target.value || null })}
+              className={inputClass}
+            />
+            <input
+              type="text"
+              placeholder="Body: {message}"
+              value={settings.body_template ?? ''}
+              onChange={(e) => setSettings({ ...settings, body_template: e.target.value || null })}
+              className={inputClass}
+            />
+            <span className="text-text-secondary text-[0.5rem]">
+              Variables: {'{project_name}'} {'{project_dir}'} {'{status}'} {'{emoji}'} {'{message}'}{' '}
+              {'{priority}'}
+            </span>
           </div>
 
           {/* Project rules */}
@@ -296,9 +349,10 @@ export const NotificationSettings = ({ onClose }: NotificationSettingsProps) => 
             </button>
           </div>
 
+          {/* Toast message */}
           {message && (
             <div
-              className={`text-[0.625rem] ${message.type === 'success' ? 'text-success' : 'text-accent'}`}
+              className={`text-[0.625rem] transition-opacity ${message.type === 'success' ? 'text-success' : 'text-accent'}`}
             >
               {message.text}
             </div>
@@ -309,6 +363,15 @@ export const NotificationSettings = ({ onClose }: NotificationSettingsProps) => 
   );
 };
 
+const isValidUrl = (url: string): boolean => {
+  try {
+    new URL(url);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 const ChannelEditor = ({
   channel,
   onUpdate,
@@ -317,85 +380,92 @@ const ChannelEditor = ({
   channel: ChannelConfig;
   onUpdate: (ch: ChannelConfig) => void;
   onRemove: () => void;
-}) => (
-  <div className="bg-bg-card rounded-lg p-2 flex flex-col gap-1.5">
-    <div className="flex justify-between items-center">
-      <span className="font-semibold text-[0.625rem] uppercase tracking-wider text-text-secondary">
-        {channel.type}
-      </span>
-      <button
-        onClick={onRemove}
-        className="text-accent hover:text-text-primary bg-transparent border-none cursor-pointer text-[0.625rem]"
-      >
-        Remove
-      </button>
+}) => {
+  const urlInvalid =
+    (channel.type === 'ntfy' && channel.server && !isValidUrl(channel.server)) ||
+    (channel.type === 'webhook' && channel.url && !isValidUrl(channel.url));
+
+  return (
+    <div className="bg-bg-card rounded-lg p-2 flex flex-col gap-1.5">
+      <div className="flex justify-between items-center">
+        <span className="font-semibold text-[0.625rem] uppercase tracking-wider text-text-secondary">
+          {channel.type}
+        </span>
+        <button
+          onClick={onRemove}
+          className="text-accent hover:text-text-primary bg-transparent border-none cursor-pointer text-[0.625rem]"
+        >
+          Remove
+        </button>
+      </div>
+      {channel.type === 'ntfy' && (
+        <>
+          <input
+            type="text"
+            placeholder="Server URL"
+            value={channel.server}
+            onChange={(e) => onUpdate({ ...channel, server: e.target.value })}
+            className={inputClass}
+          />
+          <input
+            type="text"
+            placeholder="Topic"
+            value={channel.topic}
+            onChange={(e) => onUpdate({ ...channel, topic: e.target.value })}
+            className={inputClass}
+          />
+          <input
+            type="password"
+            placeholder="Token (optional)"
+            value={channel.token ?? ''}
+            onChange={(e) => onUpdate({ ...channel, token: e.target.value || null })}
+            className={inputClass}
+          />
+        </>
+      )}
+      {channel.type === 'webhook' && (
+        <input
+          type="text"
+          placeholder="Webhook URL"
+          value={channel.url}
+          onChange={(e) => onUpdate({ ...channel, url: e.target.value })}
+          className={inputClass}
+        />
+      )}
+      {channel.type === 'pushover' && (
+        <>
+          <input
+            type="text"
+            placeholder="User Key"
+            value={channel.user_key}
+            onChange={(e) => onUpdate({ ...channel, user_key: e.target.value })}
+            className={inputClass}
+          />
+          <input
+            type="password"
+            placeholder="App Token"
+            value={channel.app_token}
+            onChange={(e) => onUpdate({ ...channel, app_token: e.target.value })}
+            className={inputClass}
+          />
+          <input
+            type="text"
+            placeholder="Device (optional)"
+            value={channel.device ?? ''}
+            onChange={(e) => onUpdate({ ...channel, device: e.target.value || null })}
+            className={inputClass}
+          />
+        </>
+      )}
+      {channel.type === 'desktop' && (
+        <span className="text-text-secondary text-[0.625rem]">
+          Uses OS-native notifications. No additional configuration needed.
+        </span>
+      )}
+      {urlInvalid && <span className="text-accent text-[0.5rem]">Invalid URL format</span>}
     </div>
-    {channel.type === 'ntfy' && (
-      <>
-        <input
-          type="text"
-          placeholder="Server URL"
-          value={channel.server}
-          onChange={(e) => onUpdate({ ...channel, server: e.target.value })}
-          className={inputClass}
-        />
-        <input
-          type="text"
-          placeholder="Topic"
-          value={channel.topic}
-          onChange={(e) => onUpdate({ ...channel, topic: e.target.value })}
-          className={inputClass}
-        />
-        <input
-          type="password"
-          placeholder="Token (optional)"
-          value={channel.token ?? ''}
-          onChange={(e) => onUpdate({ ...channel, token: e.target.value || null })}
-          className={inputClass}
-        />
-      </>
-    )}
-    {channel.type === 'webhook' && (
-      <input
-        type="text"
-        placeholder="Webhook URL"
-        value={channel.url}
-        onChange={(e) => onUpdate({ ...channel, url: e.target.value })}
-        className={inputClass}
-      />
-    )}
-    {channel.type === 'pushover' && (
-      <>
-        <input
-          type="text"
-          placeholder="User Key"
-          value={channel.user_key}
-          onChange={(e) => onUpdate({ ...channel, user_key: e.target.value })}
-          className={inputClass}
-        />
-        <input
-          type="password"
-          placeholder="App Token"
-          value={channel.app_token}
-          onChange={(e) => onUpdate({ ...channel, app_token: e.target.value })}
-          className={inputClass}
-        />
-        <input
-          type="text"
-          placeholder="Device (optional)"
-          value={channel.device ?? ''}
-          onChange={(e) => onUpdate({ ...channel, device: e.target.value || null })}
-          className={inputClass}
-        />
-      </>
-    )}
-    {channel.type === 'desktop' && (
-      <span className="text-text-secondary text-[0.625rem]">
-        Uses OS-native notifications. No additional configuration needed.
-      </span>
-    )}
-  </div>
-);
+  );
+};
 
 const HistoryTab = ({
   history,

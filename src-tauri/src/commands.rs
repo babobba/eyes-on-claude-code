@@ -503,6 +503,8 @@ pub fn send_test_notification(
         new_status: eocc_core::state::SessionStatus::WaitingInput,
         message: "This is a test notification from Eyes on Claude Code".to_string(),
         priority: notifications::NotificationPriority::Normal,
+        title_template: state_guard.notification_settings.title_template.clone(),
+        body_template: state_guard.notification_settings.body_template.clone(),
     };
 
     let sinks = sinks_state

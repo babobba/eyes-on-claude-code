@@ -115,6 +115,9 @@ export interface NotificationSettings {
   channels: ChannelConfig[];
   notify_on: SessionStatus[];
   project_rules: ProjectRule[];
+  cooldown_seconds?: number | null;
+  title_template?: string | null;
+  body_template?: string | null;
 }
 
 export interface ChannelResult {
