@@ -46,6 +46,8 @@ pub struct SessionNotification {
     pub title_template: Option<String>,
     #[serde(skip)]
     pub body_template: Option<String>,
+    #[serde(default)]
+    pub click_url: Option<String>,
 }
 
 impl SessionNotification {
@@ -134,6 +136,10 @@ pub struct NotificationSettings {
     pub title_template: Option<String>,
     #[serde(default)]
     pub body_template: Option<String>,
+    #[serde(default)]
+    pub api_port: Option<u16>,
+    #[serde(default)]
+    pub external_url: Option<String>,
 }
 
 impl NotificationSettings {
@@ -157,6 +163,18 @@ impl NotificationSettings {
         }
         (self.enabled, &self.notify_on)
     }
+}
+
+/// Percent-encode a string for use in URLs.
+fn urlencoded(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                String::from(b as char)
+            }
+            _ => format!("%{:02X}", b),
+        })
+        .collect()
 }
 
 /// Simple glob-like pattern matching for project rules.
@@ -199,6 +217,8 @@ impl Default for NotificationSettings {
             cooldown_seconds: None,
             title_template: None,
             body_template: None,
+            api_port: None,
+            external_url: None,
         }
     }
 }
@@ -271,6 +291,20 @@ pub fn detect_status_transitions(
                 SessionStatus::Active => NotificationPriority::Low,
             };
 
+            let click_url = settings.external_url.as_ref().map(|base| {
+                let base = base.trim_end_matches('/');
+                if !session.tmux_pane.is_empty() {
+                    format!(
+                        "{}/tmux/{}?project_dir={}",
+                        base,
+                        urlencoded(&session.tmux_pane),
+                        urlencoded(&session.project_dir),
+                    )
+                } else {
+                    format!("{}/?project_dir={}", base, urlencoded(&session.project_dir))
+                }
+            });
+
             notifications.push(SessionNotification {
                 project_name: session.project_name.clone(),
                 project_dir: session.project_dir.clone(),
@@ -281,6 +315,7 @@ pub fn detect_status_transitions(
                 priority,
                 title_template: settings.title_template.clone(),
                 body_template: settings.body_template.clone(),
+                click_url,
             });
         }
     }
@@ -413,6 +448,8 @@ mod tests {
             cooldown_seconds: None,
             title_template: None,
             body_template: None,
+            api_port: None,
+            external_url: None,
         }
     }
 
@@ -524,6 +561,7 @@ mod tests {
             priority: NotificationPriority::High,
             title_template: None,
             body_template: None,
+            click_url: None,
         };
         assert_eq!(n.title(), "🔐 my-project - Waiting for permission");
         assert_eq!(n.body(), "Approve bash command");
@@ -541,6 +579,7 @@ mod tests {
             priority: NotificationPriority::Normal,
             title_template: None,
             body_template: None,
+            click_url: None,
         };
         assert_eq!(n.body(), "Completed");
     }
@@ -581,6 +620,8 @@ mod tests {
             cooldown_seconds: None,
             title_template: None,
             body_template: None,
+            api_port: None,
+            external_url: None,
         };
         let toml_str = toml::to_string_pretty(&settings).unwrap();
         let parsed: NotificationSettings = toml::from_str(&toml_str).unwrap();
@@ -642,6 +683,8 @@ channels = []
             cooldown_seconds: None,
             title_template: None,
             body_template: None,
+            api_port: None,
+            external_url: None,
         };
 
         save_settings_to_file(&path, &settings).unwrap();
@@ -756,6 +799,8 @@ channels = []
             cooldown_seconds: None,
             title_template: None,
             body_template: None,
+            api_port: None,
+            external_url: None,
         };
         let notifications = detect_status_transitions(&old, &new_sessions, &settings);
         assert_eq!(notifications.len(), 0);
@@ -782,6 +827,8 @@ channels = []
             cooldown_seconds: None,
             title_template: None,
             body_template: None,
+            api_port: None,
+            external_url: None,
         };
         let notifications = detect_status_transitions(&old, &new_sessions, &settings);
         assert_eq!(notifications.len(), 1);
@@ -858,6 +905,8 @@ channels = []
             cooldown_seconds: None,
             title_template: None,
             body_template: None,
+            api_port: None,
+            external_url: None,
         };
         let toml_str = toml::to_string_pretty(&settings).unwrap();
         let parsed: NotificationSettings = toml::from_str(&toml_str).unwrap();
@@ -879,6 +928,7 @@ channels = []
             priority: NotificationPriority::Normal,
             title_template: None,
             body_template: None,
+            click_url: None,
         };
         let record = dispatch(&sinks, &notification);
         assert_eq!(record.project_name, "proj");
@@ -897,6 +947,7 @@ channels = []
             priority: NotificationPriority::Normal,
             title_template: Some("{project_name} is now {status}".to_string()),
             body_template: None,
+            click_url: None,
         };
         assert_eq!(n.title(), "my-proj is now Completed");
         assert_eq!(n.body(), "done");
@@ -914,6 +965,7 @@ channels = []
             priority: NotificationPriority::High,
             title_template: None,
             body_template: Some("{emoji} {message} ({priority})".to_string()),
+            click_url: None,
         };
         assert_eq!(n.title(), "🔐 proj - Waiting for permission");
         assert_eq!(n.body(), "🔐 approve bash (high)");
@@ -935,6 +987,8 @@ channels = []
             cooldown_seconds: None,
             title_template: Some("{project_name}: {status}".to_string()),
             body_template: Some("{message}".to_string()),
+            api_port: None,
+            external_url: None,
         };
         let notifications = detect_status_transitions(&old, &new_sessions, &settings);
         assert_eq!(notifications.len(), 1);
@@ -951,6 +1005,8 @@ channels = []
             cooldown_seconds: Some(30),
             title_template: Some("{emoji} {project_name}".to_string()),
             body_template: Some("{status}: {message}".to_string()),
+            api_port: None,
+            external_url: None,
         };
         let toml_str = toml::to_string_pretty(&settings).unwrap();
         let parsed: NotificationSettings = toml::from_str(&toml_str).unwrap();

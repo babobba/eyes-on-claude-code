@@ -72,6 +72,8 @@ fn full_pipeline_session_start_to_notification() {
         cooldown_seconds: None,
         title_template: None,
         body_template: None,
+        api_port: None,
+        external_url: None,
     };
     let mut history = NotificationHistory::default();
 
@@ -153,6 +155,8 @@ fn pipeline_with_project_rules() {
         cooldown_seconds: None,
         title_template: None,
         body_template: None,
+        api_port: None,
+        external_url: None,
     };
 
     // Start two sessions
@@ -210,6 +214,8 @@ fn pipeline_with_templates() {
         cooldown_seconds: None,
         title_template: Some("{project_name} needs attention".to_string()),
         body_template: Some("{status}: {message}".to_string()),
+        api_port: None,
+        external_url: None,
     };
 
     let events = vec![make_event(EventType::SessionStart, "proj", "/proj", "s1")];
@@ -264,6 +270,8 @@ fn config_load_and_use() {
         cooldown_seconds: Some(60),
         title_template: Some("{emoji} {project_name}".to_string()),
         body_template: None,
+        api_port: None,
+        external_url: None,
     };
 
     save_settings_to_file(&path, &settings).unwrap();
@@ -314,6 +322,7 @@ fn dispatch_no_sinks_records_empty() {
         priority: eocc_core::notifications::NotificationPriority::Normal,
         title_template: None,
         body_template: None,
+        click_url: None,
     };
 
     let record = dispatch(&sinks, &notification);
@@ -334,6 +343,8 @@ fn multi_session_lifecycle_with_history() {
         cooldown_seconds: None,
         title_template: None,
         body_template: None,
+        api_port: None,
+        external_url: None,
     };
     let mut history = NotificationHistory::default();
     let sinks = build_sinks(&[]);

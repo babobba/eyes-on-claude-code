@@ -506,6 +506,7 @@ pub fn send_test_notification(
         priority: notifications::NotificationPriority::Normal,
         title_template: state_guard.notification_settings.title_template.clone(),
         body_template: state_guard.notification_settings.body_template.clone(),
+        click_url: None,
     };
 
     let sinks = sinks_state

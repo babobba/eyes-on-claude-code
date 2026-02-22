@@ -12,6 +12,8 @@ struct WebhookPayload {
     project_dir: String,
     status: String,
     priority: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    url: Option<String>,
 }
 
 impl WebhookSink {
@@ -32,6 +34,7 @@ impl NotificationSink for WebhookSink {
             project_dir: notification.project_dir.clone(),
             status: format!("{:?}", notification.new_status),
             priority: notification.priority.to_string(),
+            url: notification.click_url.clone(),
         };
 
         let body =

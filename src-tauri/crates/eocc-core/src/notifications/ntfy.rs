@@ -53,6 +53,10 @@ impl NotificationSink for NtfySink {
             request = request.set("Authorization", &format!("Bearer {}", token));
         }
 
+        if let Some(ref url) = notification.click_url {
+            request = request.set("Click", url);
+        }
+
         request
             .send_string(&notification.body())
             .map_err(|e| format!("ntfy request failed: {}", e))?;

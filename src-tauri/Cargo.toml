@@ -29,6 +29,7 @@ opener = "0.8"
 anyhow = "1"
 base64 = "0.22"
 urlencoding = "2"
+tiny_http = "0.12"
 
 [profile.release]
 strip = true

@@ -125,7 +125,39 @@ async function main() {
 
   const payloadJson = JSON.stringify(payload);
 
+  // Send via webhook if EOCC_WEBHOOK_URL is configured
+  const webhookUrl = process.env.EOCC_WEBHOOK_URL;
+  if (webhookUrl) {
+    postWebhook(webhookUrl, payloadJson);
+  }
+
+  // Always write to local file (even when webhook is configured, for resilience)
   appendLine(logFile, payloadJson);
+}
+
+function postWebhook(url, body) {
+  try {
+    const parsedUrl = new URL(url);
+    const mod = parsedUrl.protocol === "https:" ? require("node:https") : require("node:http");
+    const options = {
+      hostname: parsedUrl.hostname,
+      port: parsedUrl.port || (parsedUrl.protocol === "https:" ? 443 : 80),
+      path: parsedUrl.pathname + parsedUrl.search,
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Content-Length": Buffer.byteLength(body),
+      },
+      timeout: 5000,
+    };
+    const req = mod.request(options, () => {});
+    req.on("error", () => {});
+    req.on("timeout", () => req.destroy());
+    req.write(body);
+    req.end();
+  } catch {
+    // Best-effort: never fail the hook call
+  }
 }
 
 main().catch(() => {

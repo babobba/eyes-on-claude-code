@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod api_server;
 mod commands;
 mod constants;
 mod difit;
@@ -98,6 +99,43 @@ fn to_core_status(s: &crate::state::SessionStatus) -> eocc_core::state::SessionS
     }
 }
 
+fn to_core_transport(t: &crate::state::Transport) -> eocc_core::state::Transport {
+    match t {
+        crate::state::Transport::Local {} => eocc_core::state::Transport::Local {},
+        crate::state::Transport::Ssh {
+            host,
+            port,
+            user,
+            identity_file,
+        } => eocc_core::state::Transport::Ssh {
+            host: host.clone(),
+            port: *port,
+            user: user.clone(),
+            identity_file: identity_file.clone(),
+        },
+        crate::state::Transport::Mosh {
+            host,
+            port,
+            user,
+            mosh_port,
+        } => eocc_core::state::Transport::Mosh {
+            host: host.clone(),
+            port: *port,
+            user: user.clone(),
+            mosh_port: *mosh_port,
+        },
+        crate::state::Transport::Tailscale {
+            host,
+            user,
+            identity_file,
+        } => eocc_core::state::Transport::Tailscale {
+            host: host.clone(),
+            user: user.clone(),
+            identity_file: identity_file.clone(),
+        },
+    }
+}
+
 fn to_core_session_info(s: &crate::state::SessionInfo) -> eocc_core::state::SessionInfo {
     eocc_core::state::SessionInfo {
         project_name: s.project_name.clone(),
@@ -106,6 +144,7 @@ fn to_core_session_info(s: &crate::state::SessionInfo) -> eocc_core::state::Sess
         last_event: s.last_event.clone(),
         waiting_for: s.waiting_for.clone(),
         tmux_pane: s.tmux_pane.clone(),
+        transport: to_core_transport(&s.transport),
     }
 }
 
@@ -601,6 +640,23 @@ fn main() {
 
             // Start config file watcher for notification settings hot-reload
             start_config_watcher(Arc::clone(&state_clone), Arc::clone(&notification_sinks));
+
+            // Start API server if api_port is configured
+            {
+                let api_port = state_clone
+                    .lock()
+                    .ok()
+                    .and_then(|s| s.notification_settings.api_port);
+                if let Some(port) = api_port {
+                    api_server::start_api_server(
+                        port,
+                        app.handle().clone(),
+                        Arc::clone(&state_clone),
+                        Arc::clone(&notification_sinks),
+                        Arc::clone(&notification_history),
+                    );
+                }
+            }
 
             // Start file watcher
             start_file_watcher(

@@ -43,6 +43,11 @@ impl NotificationSink for PushoverSink {
             form.push_str(&format!("&device={}", urlencoded(device)));
         }
 
+        if let Some(ref url) = notification.click_url {
+            form.push_str(&format!("&url={}", urlencoded(url)));
+            form.push_str(&format!("&url_title={}", urlencoded("Open in EOCC")));
+        }
+
         ureq::post("https://api.pushover.net/1/messages.json")
             .set("Content-Type", "application/x-www-form-urlencoded")
             .send_string(&form)
