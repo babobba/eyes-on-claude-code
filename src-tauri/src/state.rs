@@ -231,3 +231,7 @@ pub struct ManagedState(pub Arc<Mutex<AppState>>);
 pub struct NotificationSinksState(
     pub Arc<Mutex<Vec<Box<dyn eocc_core::notifications::NotificationSink>>>>,
 );
+
+pub struct NotificationHistoryState(
+    pub Arc<Mutex<eocc_core::notifications::history::NotificationHistory>>,
+);

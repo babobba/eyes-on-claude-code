@@ -28,12 +28,13 @@ use eocc_core::notifications::{self, NotificationSink};
 use tauri_plugin_log::RotationStrategy;
 
 use commands::{
-    check_claude_settings, clear_all_sessions, get_always_on_top, get_dashboard_data,
-    get_notification_settings, get_repo_branches, get_repo_git_info, get_settings,
-    get_setup_status, install_hook, open_claude_settings, open_diff, open_tmux_viewer,
-    remove_session, send_test_notification, set_always_on_top, set_opacity_active,
-    set_opacity_inactive, set_window_size_for_setup, tmux_capture_pane, tmux_get_pane_size,
-    tmux_is_available, tmux_list_panes, tmux_send_keys, update_notification_settings,
+    check_claude_settings, clear_all_sessions, clear_notification_history, get_always_on_top,
+    get_dashboard_data, get_notification_history, get_notification_settings, get_repo_branches,
+    get_repo_git_info, get_settings, get_setup_status, install_hook, open_claude_settings,
+    open_diff, open_tmux_viewer, remove_session, send_test_notification, set_always_on_top,
+    set_opacity_active, set_opacity_inactive, set_window_size_for_setup, tmux_capture_pane,
+    tmux_get_pane_size, tmux_is_available, tmux_list_panes, tmux_send_keys,
+    update_notification_settings,
 };
 use constants::{ICON_NORMAL, MINI_VIEW_HEIGHT, MINI_VIEW_WIDTH};
 use events::{apply_events_to_state, read_events_from_queue};
@@ -42,7 +43,7 @@ use persist::{create_runtime_snapshot, load_runtime_state, save_runtime_snapshot
 use settings::{
     get_app_log_dir, get_log_dir, load_notification_settings, load_settings, save_settings,
 };
-use state::{AppState, ManagedState, NotificationSinksState};
+use state::{AppState, ManagedState, NotificationHistoryState, NotificationSinksState};
 use tray::{emit_state_update, update_tray_and_badge};
 
 fn show_dashboard(app: &tauri::AppHandle) {
@@ -111,6 +112,7 @@ fn start_file_watcher(
     app_handle: tauri::AppHandle,
     state: Arc<Mutex<AppState>>,
     notification_sinks: Arc<Mutex<Vec<Box<dyn NotificationSink>>>>,
+    notification_history: Arc<Mutex<notifications::history::NotificationHistory>>,
 ) {
     let log_dir = match get_log_dir(&app_handle) {
         Ok(dir) => dir,
@@ -185,7 +187,7 @@ fn start_file_watcher(
                                 notifications::detect_status_transitions(
                                     &old_statuses,
                                     &core_sessions,
-                                    &state_guard.notification_settings.notify_on,
+                                    &state_guard.notification_settings,
                                 )
                             } else {
                                 Vec::new()
@@ -201,7 +203,10 @@ fn start_file_watcher(
                         if !pending_notifications.is_empty() {
                             if let Ok(sinks) = notification_sinks.lock() {
                                 for notification in &pending_notifications {
-                                    notifications::dispatch(&sinks, notification);
+                                    let record = notifications::dispatch(&sinks, notification);
+                                    if let Ok(mut history) = notification_history.lock() {
+                                        history.push(record);
+                                    }
                                 }
                             }
                         }
@@ -211,6 +216,64 @@ fn start_file_watcher(
                     eprintln!("[eocc] Watch channel error: {:?}", e);
                     break;
                 }
+            }
+        }
+    });
+}
+
+/// Watch `~/.eocc/notification_settings.toml` for changes and hot-reload sinks.
+fn start_config_watcher(
+    state: Arc<Mutex<AppState>>,
+    sinks: Arc<Mutex<Vec<Box<dyn NotificationSink>>>>,
+) {
+    let config_path = match settings::get_notification_settings_file() {
+        Ok(p) => p,
+        Err(e) => {
+            log::warn!(target: "eocc.settings", "Cannot watch config file: {}", e);
+            return;
+        }
+    };
+
+    let watch_dir = match config_path.parent() {
+        Some(p) => p.to_path_buf(),
+        None => return,
+    };
+
+    std::thread::spawn(move || {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut watcher = match RecommendedWatcher::new(tx, Config::default()) {
+            Ok(w) => w,
+            Err(e) => {
+                log::warn!(target: "eocc.settings", "Cannot create config watcher: {:?}", e);
+                return;
+            }
+        };
+
+        if let Err(e) = watcher.watch(&watch_dir, RecursiveMode::NonRecursive) {
+            log::warn!(target: "eocc.settings", "Cannot watch config directory: {:?}", e);
+            return;
+        }
+
+        log::info!(target: "eocc.settings", "Watching {:?} for config changes", watch_dir);
+
+        while rx.recv().is_ok() {
+            if !config_path.exists() {
+                continue;
+            }
+            let new_settings = eocc_core::notifications::load_settings_from_file(&config_path);
+            let new_sinks = notifications::build_sinks(&new_settings.channels);
+            log::info!(
+                target: "eocc.settings",
+                "Config file changed - rebuilt {} sink(s), enabled={}",
+                new_sinks.len(),
+                new_settings.enabled
+            );
+
+            if let Ok(mut s) = sinks.lock() {
+                *s = new_sinks;
+            }
+            if let Ok(mut state_guard) = state.lock() {
+                state_guard.notification_settings = new_settings;
             }
         }
     });
@@ -257,6 +320,8 @@ fn main() {
             get_notification_settings,
             update_notification_settings,
             send_test_notification,
+            get_notification_history,
+            clear_notification_history,
             // Tmux commands
             tmux_is_available,
             tmux_list_panes,
@@ -305,8 +370,12 @@ fn main() {
                 Arc::new(Mutex::new(sinks))
             };
 
-            // Register notification sinks as managed state for commands
+            // Register notification sinks and history as managed state for commands
             app.manage(NotificationSinksState(Arc::clone(&notification_sinks)));
+            let notification_history = Arc::new(Mutex::new(
+                notifications::history::NotificationHistory::default(),
+            ));
+            app.manage(NotificationHistoryState(Arc::clone(&notification_history)));
 
             // Drain any queued events written by the hook while app was not running
             // File I/O is done outside of lock
@@ -505,11 +574,15 @@ fn main() {
                 })
                 .build(app)?;
 
+            // Start config file watcher for notification settings hot-reload
+            start_config_watcher(Arc::clone(&state_clone), Arc::clone(&notification_sinks));
+
             // Start file watcher
             start_file_watcher(
                 app.handle().clone(),
                 Arc::clone(&state_clone),
                 notification_sinks,
+                notification_history,
             );
 
             Ok(())

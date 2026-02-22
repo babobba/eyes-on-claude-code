@@ -5,6 +5,7 @@ import type {
   DashboardData,
   DiffType,
   GitInfo,
+  NotificationRecord,
   NotificationSettings,
   Settings,
   SetupStatus,
@@ -34,6 +35,9 @@ export const getNotificationSettings = () =>
 export const updateNotificationSettings = (settings: NotificationSettings) =>
   invoke('update_notification_settings', { settings });
 export const sendTestNotification = () => invoke('send_test_notification');
+export const getNotificationHistory = () =>
+  invoke<NotificationRecord[]>('get_notification_history');
+export const clearNotificationHistory = () => invoke('clear_notification_history');
 
 // Setup commands
 export const getSetupStatus = () => invoke<SetupStatus>('get_setup_status');

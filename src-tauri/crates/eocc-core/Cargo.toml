@@ -8,6 +8,8 @@ license = "MIT"
 default = []
 ntfy = ["dep:ureq"]
 webhook = ["dep:ureq"]
+pushover = ["dep:ureq"]
+desktop_notifications = ["dep:notify-rust"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -15,6 +17,7 @@ serde_json = "1"
 toml = "0.8"
 log = "0.4"
 ureq = { version = "2", optional = true }
+notify-rust = { version = "4", optional = true }
 
 [dev-dependencies]
 serde_json = "1"

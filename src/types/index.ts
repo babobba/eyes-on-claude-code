@@ -91,12 +91,44 @@ export interface WebhookChannel {
   url: string;
 }
 
-export type ChannelConfig = NtfyChannel | WebhookChannel;
+export interface PushoverChannel {
+  type: 'pushover';
+  user_key: string;
+  app_token: string;
+  device?: string | null;
+}
+
+export interface DesktopChannel {
+  type: 'desktop';
+}
+
+export type ChannelConfig = NtfyChannel | WebhookChannel | PushoverChannel | DesktopChannel;
+
+export interface ProjectRule {
+  pattern: string;
+  enabled?: boolean | null;
+  notify_on?: SessionStatus[] | null;
+}
 
 export interface NotificationSettings {
   enabled: boolean;
   channels: ChannelConfig[];
   notify_on: SessionStatus[];
+  project_rules: ProjectRule[];
+}
+
+export interface ChannelResult {
+  name: string;
+  success: boolean;
+  error?: string | null;
+}
+
+export interface NotificationRecord {
+  timestamp: string;
+  project_name: string;
+  project_dir: string;
+  status: string;
+  channels: ChannelResult[];
 }
 
 // Status of each individual hook type

@@ -1,5 +1,10 @@
+#[cfg(feature = "desktop_notifications")]
+pub mod desktop;
+pub mod history;
 #[cfg(feature = "ntfy")]
 pub mod ntfy;
+#[cfg(feature = "pushover")]
+pub mod pushover;
 #[cfg(feature = "webhook")]
 pub mod webhook;
 
@@ -75,6 +80,22 @@ pub enum ChannelConfig {
     Webhook {
         url: String,
     },
+    Pushover {
+        user_key: String,
+        app_token: String,
+        #[serde(default)]
+        device: Option<String>,
+    },
+    Desktop {},
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectRule {
+    pub pattern: String,
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub notify_on: Option<Vec<SessionStatus>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -85,6 +106,8 @@ pub struct NotificationSettings {
     pub channels: Vec<ChannelConfig>,
     #[serde(default = "NotificationSettings::default_notify_on")]
     pub notify_on: Vec<SessionStatus>,
+    #[serde(default)]
+    pub project_rules: Vec<ProjectRule>,
 }
 
 impl NotificationSettings {
@@ -95,6 +118,49 @@ impl NotificationSettings {
             SessionStatus::Completed,
         ]
     }
+
+    /// Resolve the effective `enabled` and `notify_on` for a given project directory.
+    /// Project rules are checked in order; the first matching rule wins.
+    pub fn resolve_for_project(&self, project_dir: &str) -> (bool, &[SessionStatus]) {
+        for rule in &self.project_rules {
+            if pattern_matches(&rule.pattern, project_dir) {
+                let enabled = rule.enabled.unwrap_or(self.enabled);
+                let notify_on = rule.notify_on.as_deref().unwrap_or(&self.notify_on);
+                return (enabled, notify_on);
+            }
+        }
+        (self.enabled, &self.notify_on)
+    }
+}
+
+/// Simple glob-like pattern matching for project rules.
+/// Supports `*` (any chars within a segment) and `**` (any path segments).
+fn pattern_matches(pattern: &str, path: &str) -> bool {
+    if pattern.is_empty() {
+        return path.is_empty();
+    }
+    // Exact match
+    if pattern == path {
+        return true;
+    }
+    // Ends-with match: pattern starts with `**/`
+    if let Some(suffix) = pattern.strip_prefix("**/") {
+        return path.ends_with(suffix) || path.contains(&format!("/{}", suffix));
+    }
+    // Contains match: pattern starts with `*` and ends with `*`
+    if pattern.starts_with('*') && pattern.ends_with('*') && pattern.len() > 2 {
+        let inner = &pattern[1..pattern.len() - 1];
+        return path.contains(inner);
+    }
+    // Prefix match
+    if let Some(prefix) = pattern.strip_suffix("/**") {
+        return path.starts_with(prefix);
+    }
+    // Simple suffix match with single `*`
+    if let Some(prefix) = pattern.strip_suffix('*') {
+        return path.starts_with(prefix);
+    }
+    false
 }
 
 impl Default for NotificationSettings {
@@ -103,6 +169,7 @@ impl Default for NotificationSettings {
             enabled: false,
             channels: Vec::new(),
             notify_on: Self::default_notify_on(),
+            project_rules: Vec::new(),
         }
     }
 }
@@ -138,23 +205,25 @@ pub fn save_settings_to_file(path: &Path, settings: &NotificationSettings) -> Re
         fs::create_dir_all(parent)
             .map_err(|e| format!("Failed to create settings directory: {:?}", e))?;
     }
-    let content =
-        toml::to_string_pretty(settings).map_err(|e| format!("Failed to serialize settings: {:?}", e))?;
+    let content = toml::to_string_pretty(settings)
+        .map_err(|e| format!("Failed to serialize settings: {:?}", e))?;
     fs::write(path, content).map_err(|e| format!("Failed to write settings file: {:?}", e))?;
     Ok(())
 }
 
 /// Compare old session statuses to new state and produce notifications for transitions
-/// into any of the `notify_on` statuses.
+/// into any of the `notify_on` statuses. Uses per-project rules when available.
 pub fn detect_status_transitions(
     old_statuses: &HashMap<String, SessionStatus>,
     new_sessions: &HashMap<String, SessionInfo>,
-    notify_on: &[SessionStatus],
+    settings: &NotificationSettings,
 ) -> Vec<SessionNotification> {
     let mut notifications = Vec::new();
 
     for (key, session) in new_sessions {
-        if !notify_on.contains(&session.status) {
+        let (project_enabled, notify_on) = settings.resolve_for_project(&session.project_dir);
+
+        if !project_enabled || !notify_on.contains(&session.status) {
             continue;
         }
 
@@ -191,7 +260,7 @@ pub fn detect_status_transitions(
 /// Build notification sinks from channel configs.
 /// Returns sinks for enabled channels, skipping unsupported ones.
 pub fn build_sinks(channels: &[ChannelConfig]) -> Vec<Box<dyn NotificationSink>> {
-    let sinks: Vec<Box<dyn NotificationSink>> = channels
+    channels
         .iter()
         .filter_map(|channel| -> Option<Box<dyn NotificationSink>> {
             match channel {
@@ -209,6 +278,18 @@ pub fn build_sinks(channels: &[ChannelConfig]) -> Vec<Box<dyn NotificationSink>>
                 ChannelConfig::Webhook { url } => {
                     Some(Box::new(webhook::WebhookSink::new(url.clone())))
                 }
+                #[cfg(feature = "pushover")]
+                ChannelConfig::Pushover {
+                    user_key,
+                    app_token,
+                    device,
+                } => Some(Box::new(pushover::PushoverSink::new(
+                    user_key.clone(),
+                    app_token.clone(),
+                    device.clone(),
+                ))),
+                #[cfg(feature = "desktop_notifications")]
+                ChannelConfig::Desktop {} => Some(Box::new(desktop::DesktopSink::new())),
                 #[allow(unreachable_patterns)]
                 _ => {
                     log::warn!(
@@ -219,17 +300,60 @@ pub fn build_sinks(channels: &[ChannelConfig]) -> Vec<Box<dyn NotificationSink>>
                 }
             }
         })
-        .collect();
-
-    sinks
+        .collect()
 }
 
-/// Send a notification to all provided sinks. Errors are logged but not propagated.
-pub fn dispatch(sinks: &[Box<dyn NotificationSink>], notification: &SessionNotification) {
+/// Send a notification to all provided sinks. Returns a history record.
+pub fn dispatch(
+    sinks: &[Box<dyn NotificationSink>],
+    notification: &SessionNotification,
+) -> history::NotificationRecord {
+    let mut channel_results = Vec::new();
+
     for sink in sinks {
-        if let Err(e) = sink.send(notification) {
-            log::error!("Failed to send notification via {}: {}", sink.name(), e);
+        match sink.send(notification) {
+            Ok(()) => {
+                channel_results.push(history::ChannelResult {
+                    name: sink.name().to_string(),
+                    success: true,
+                    error: None,
+                });
+            }
+            Err(e) => {
+                log::error!("Failed to send notification via {}: {}", sink.name(), e);
+                channel_results.push(history::ChannelResult {
+                    name: sink.name().to_string(),
+                    success: false,
+                    error: Some(e),
+                });
+            }
         }
+    }
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| {
+            let secs = d.as_secs();
+            let nanos = d.subsec_nanos();
+            format!(
+                "{}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
+                1970 + secs / 31_557_600,
+                (secs % 31_557_600) / 2_629_800 + 1,
+                (secs % 2_629_800) / 86400 + 1,
+                (secs % 86400) / 3600,
+                (secs % 3600) / 60,
+                secs % 60,
+                nanos / 1_000_000,
+            )
+        })
+        .unwrap_or_default();
+
+    history::NotificationRecord {
+        timestamp: now,
+        project_name: notification.project_name.clone(),
+        project_dir: notification.project_dir.clone(),
+        status: format!("{:?}", notification.new_status),
+        channels: channel_results,
     }
 }
 
@@ -248,6 +372,15 @@ mod tests {
         }
     }
 
+    fn make_settings(notify_on: Vec<SessionStatus>) -> NotificationSettings {
+        NotificationSettings {
+            enabled: true,
+            channels: Vec::new(),
+            notify_on,
+            project_rules: Vec::new(),
+        }
+    }
+
     #[test]
     fn detect_transitions_new_session_in_notify_list() {
         let old = HashMap::new();
@@ -257,8 +390,8 @@ mod tests {
             make_session("proj", SessionStatus::WaitingPermission),
         );
 
-        let notifications =
-            detect_status_transitions(&old, &new_sessions, &[SessionStatus::WaitingPermission]);
+        let settings = make_settings(vec![SessionStatus::WaitingPermission]);
+        let notifications = detect_status_transitions(&old, &new_sessions, &settings);
         assert_eq!(notifications.len(), 1);
         assert_eq!(
             notifications[0].new_status,
@@ -278,8 +411,8 @@ mod tests {
             make_session("proj", SessionStatus::WaitingPermission),
         );
 
-        let notifications =
-            detect_status_transitions(&old, &new_sessions, &[SessionStatus::WaitingPermission]);
+        let settings = make_settings(vec![SessionStatus::WaitingPermission]);
+        let notifications = detect_status_transitions(&old, &new_sessions, &settings);
         assert_eq!(notifications.len(), 1);
         assert_eq!(notifications[0].old_status, Some(SessionStatus::Active));
     }
@@ -298,8 +431,8 @@ mod tests {
             make_session("proj", SessionStatus::WaitingPermission),
         );
 
-        let notifications =
-            detect_status_transitions(&old, &new_sessions, &[SessionStatus::WaitingPermission]);
+        let settings = make_settings(vec![SessionStatus::WaitingPermission]);
+        let notifications = detect_status_transitions(&old, &new_sessions, &settings);
         assert_eq!(notifications.len(), 0);
     }
 
@@ -312,11 +445,11 @@ mod tests {
             make_session("proj", SessionStatus::Active),
         );
 
-        let notifications = detect_status_transitions(
-            &old,
-            &new_sessions,
-            &[SessionStatus::WaitingPermission, SessionStatus::Completed],
-        );
+        let settings = make_settings(vec![
+            SessionStatus::WaitingPermission,
+            SessionStatus::Completed,
+        ]);
+        let notifications = detect_status_transitions(&old, &new_sessions, &settings);
         assert_eq!(notifications.len(), 0);
     }
 
@@ -336,11 +469,11 @@ mod tests {
             make_session("b", SessionStatus::Completed),
         );
 
-        let notifications = detect_status_transitions(
-            &old,
-            &new_sessions,
-            &[SessionStatus::WaitingPermission, SessionStatus::Completed],
-        );
+        let settings = make_settings(vec![
+            SessionStatus::WaitingPermission,
+            SessionStatus::Completed,
+        ]);
+        let notifications = detect_status_transitions(&old, &new_sessions, &settings);
         assert_eq!(notifications.len(), 2);
     }
 
@@ -379,6 +512,7 @@ mod tests {
         assert!(!settings.enabled);
         assert!(settings.channels.is_empty());
         assert_eq!(settings.notify_on.len(), 3);
+        assert!(settings.project_rules.is_empty());
     }
 
     #[test]
@@ -403,10 +537,8 @@ mod tests {
                     url: "https://hooks.slack.com/xxx".to_string(),
                 },
             ],
-            notify_on: vec![
-                SessionStatus::WaitingPermission,
-                SessionStatus::Completed,
-            ],
+            notify_on: vec![SessionStatus::WaitingPermission, SessionStatus::Completed],
+            project_rules: Vec::new(),
         };
         let toml_str = toml::to_string_pretty(&settings).unwrap();
         let parsed: NotificationSettings = toml::from_str(&toml_str).unwrap();
@@ -414,7 +546,11 @@ mod tests {
         assert_eq!(parsed.channels.len(), 2);
         assert_eq!(parsed.notify_on.len(), 2);
         match &parsed.channels[0] {
-            ChannelConfig::Ntfy { server, topic, token } => {
+            ChannelConfig::Ntfy {
+                server,
+                topic,
+                token,
+            } => {
                 assert_eq!(server, "https://ntfy.sh");
                 assert_eq!(topic, "eocc-test");
                 assert_eq!(token.as_deref(), Some("secret"));
@@ -460,6 +596,7 @@ channels = []
                 url: "https://example.com/hook".to_string(),
             }],
             notify_on: vec![SessionStatus::Completed],
+            project_rules: Vec::new(),
         };
 
         save_settings_to_file(&path, &settings).unwrap();
@@ -532,8 +669,8 @@ channels = []
             make_session("proj", SessionStatus::WaitingInput),
         );
 
-        let notifications =
-            detect_status_transitions(&old, &new_sessions, &[SessionStatus::WaitingInput]);
+        let settings = make_settings(vec![SessionStatus::WaitingInput]);
+        let notifications = detect_status_transitions(&old, &new_sessions, &settings);
         assert_eq!(notifications[0].priority, NotificationPriority::High);
     }
 
@@ -548,8 +685,147 @@ channels = []
             make_session("proj", SessionStatus::Completed),
         );
 
-        let notifications =
-            detect_status_transitions(&old, &new_sessions, &[SessionStatus::Completed]);
+        let settings = make_settings(vec![SessionStatus::Completed]);
+        let notifications = detect_status_transitions(&old, &new_sessions, &settings);
         assert_eq!(notifications[0].priority, NotificationPriority::Normal);
+    }
+
+    #[test]
+    fn project_rule_disables_notifications() {
+        let old = HashMap::new();
+        let mut new_sessions = HashMap::new();
+        new_sessions.insert(
+            "/home/user/noisy".to_string(),
+            make_session("noisy", SessionStatus::WaitingPermission),
+        );
+
+        let settings = NotificationSettings {
+            enabled: true,
+            channels: Vec::new(),
+            notify_on: vec![SessionStatus::WaitingPermission],
+            project_rules: vec![ProjectRule {
+                pattern: "**/noisy".to_string(),
+                enabled: Some(false),
+                notify_on: None,
+            }],
+        };
+        let notifications = detect_status_transitions(&old, &new_sessions, &settings);
+        assert_eq!(notifications.len(), 0);
+    }
+
+    #[test]
+    fn project_rule_overrides_notify_on() {
+        let old = HashMap::new();
+        let mut new_sessions = HashMap::new();
+        new_sessions.insert(
+            "/home/user/important".to_string(),
+            make_session("important", SessionStatus::Active),
+        );
+
+        let settings = NotificationSettings {
+            enabled: true,
+            channels: Vec::new(),
+            notify_on: vec![SessionStatus::WaitingPermission],
+            project_rules: vec![ProjectRule {
+                pattern: "**/important".to_string(),
+                enabled: None,
+                notify_on: Some(vec![SessionStatus::Active]),
+            }],
+        };
+        let notifications = detect_status_transitions(&old, &new_sessions, &settings);
+        assert_eq!(notifications.len(), 1);
+    }
+
+    #[test]
+    fn pattern_matching() {
+        assert!(pattern_matches("**/proj", "/home/user/proj"));
+        assert!(pattern_matches("**/proj", "/other/path/proj"));
+        assert!(!pattern_matches("**/proj", "/home/user/other"));
+        assert!(pattern_matches("/home/user/**", "/home/user/anything/here"));
+        assert!(pattern_matches("/home/user/proj*", "/home/user/proj-extra"));
+        assert!(pattern_matches("/home/user/proj", "/home/user/proj"));
+        assert!(!pattern_matches("/home/user/proj", "/home/user/other"));
+    }
+
+    #[test]
+    fn channel_config_pushover_roundtrip() {
+        let config = ChannelConfig::Pushover {
+            user_key: "ukey123".to_string(),
+            app_token: "atok456".to_string(),
+            device: Some("phone".to_string()),
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        let parsed: ChannelConfig = serde_json::from_str(&json).unwrap();
+        match parsed {
+            ChannelConfig::Pushover {
+                user_key,
+                app_token,
+                device,
+            } => {
+                assert_eq!(user_key, "ukey123");
+                assert_eq!(app_token, "atok456");
+                assert_eq!(device.as_deref(), Some("phone"));
+            }
+            _ => panic!("Expected Pushover variant"),
+        }
+    }
+
+    #[test]
+    fn channel_config_desktop_roundtrip() {
+        let config = ChannelConfig::Desktop {};
+        let json = serde_json::to_string(&config).unwrap();
+        let parsed: ChannelConfig = serde_json::from_str(&json).unwrap();
+        assert!(matches!(parsed, ChannelConfig::Desktop {}));
+    }
+
+    #[test]
+    fn toml_roundtrip_with_all_channel_types() {
+        let settings = NotificationSettings {
+            enabled: true,
+            channels: vec![
+                ChannelConfig::Ntfy {
+                    server: "https://ntfy.sh".to_string(),
+                    topic: "test".to_string(),
+                    token: None,
+                },
+                ChannelConfig::Webhook {
+                    url: "https://example.com".to_string(),
+                },
+                ChannelConfig::Pushover {
+                    user_key: "u".to_string(),
+                    app_token: "t".to_string(),
+                    device: None,
+                },
+                ChannelConfig::Desktop {},
+            ],
+            notify_on: vec![SessionStatus::Completed],
+            project_rules: vec![ProjectRule {
+                pattern: "**/important".to_string(),
+                enabled: Some(true),
+                notify_on: Some(vec![SessionStatus::Active, SessionStatus::Completed]),
+            }],
+        };
+        let toml_str = toml::to_string_pretty(&settings).unwrap();
+        let parsed: NotificationSettings = toml::from_str(&toml_str).unwrap();
+        assert_eq!(parsed.channels.len(), 4);
+        assert_eq!(parsed.project_rules.len(), 1);
+        assert_eq!(parsed.project_rules[0].pattern, "**/important");
+    }
+
+    #[test]
+    fn dispatch_returns_history_record() {
+        let sinks: Vec<Box<dyn NotificationSink>> = vec![];
+        let notification = SessionNotification {
+            project_name: "proj".to_string(),
+            project_dir: "/proj".to_string(),
+            session_id: "s1".to_string(),
+            old_status: None,
+            new_status: SessionStatus::Completed,
+            message: String::new(),
+            priority: NotificationPriority::Normal,
+        };
+        let record = dispatch(&sinks, &notification);
+        assert_eq!(record.project_name, "proj");
+        assert!(record.channels.is_empty());
     }
 }

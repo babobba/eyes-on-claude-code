@@ -8,10 +8,12 @@ license = "MIT"
 tauri-build = { version = "2", features = [] }
 
 [features]
-default = ["desktop", "ntfy", "webhook"]
+default = ["desktop", "ntfy", "webhook", "pushover", "desktop_notifications"]
 desktop = []
 ntfy = ["eocc-core/ntfy"]
 webhook = ["eocc-core/webhook"]
+pushover = ["eocc-core/pushover"]
+desktop_notifications = ["eocc-core/desktop_notifications"]
 
 [dependencies]
 eocc-core = { path = "crates/eocc-core" }

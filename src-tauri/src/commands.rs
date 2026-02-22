@@ -11,7 +11,9 @@ use crate::git::{get_branches, get_git_info, GitInfo};
 use crate::persist::save_runtime_state;
 use crate::settings::{save_notification_settings, save_settings};
 use crate::setup::{self, SetupStatus};
-use crate::state::{DashboardData, ManagedState, NotificationSinksState, Settings};
+use crate::state::{
+    DashboardData, ManagedState, NotificationHistoryState, NotificationSinksState, Settings,
+};
 use crate::tmux::{self, TmuxPane, TmuxPaneSize};
 use crate::tray::{emit_state_update, update_tray_and_badge};
 use eocc_core::notifications::{self, NotificationSettings};
@@ -485,6 +487,7 @@ pub fn update_notification_settings(
 #[tauri::command]
 pub fn send_test_notification(
     sinks_state: tauri::State<'_, NotificationSinksState>,
+    history_state: tauri::State<'_, NotificationHistoryState>,
     state: tauri::State<'_, ManagedState>,
 ) -> Result<(), String> {
     let state_guard = state.0.lock().map_err(|_| LOCK_ERROR)?;
@@ -509,7 +512,27 @@ pub fn send_test_notification(
     if sinks.is_empty() {
         return Err("No notification channels configured".to_string());
     }
-    notifications::dispatch(&sinks, &notification);
+    let record = notifications::dispatch(&sinks, &notification);
+    if let Ok(mut history) = history_state.0.lock() {
+        history.push(record);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_notification_history(
+    history_state: tauri::State<'_, NotificationHistoryState>,
+) -> Result<Vec<notifications::history::NotificationRecord>, String> {
+    let history = history_state.0.lock().map_err(|_| LOCK_ERROR)?;
+    Ok(history.records())
+}
+
+#[tauri::command]
+pub fn clear_notification_history(
+    history_state: tauri::State<'_, NotificationHistoryState>,
+) -> Result<(), String> {
+    let mut history = history_state.0.lock().map_err(|_| LOCK_ERROR)?;
+    history.clear();
     Ok(())
 }
 
