@@ -331,15 +331,19 @@ function App() {
   const [showSetupModal, setShowSetupModal] = useState(false);
   const [setupChecked, setSetupChecked] = useState(false);
 
-  // Parse URL parameters to check if this is a tmux viewer window
+  // Parse and validate URL parameters for tmux viewer window
   const tmuxPaneId = useMemo(() => {
     const params = new URLSearchParams(window.location.search);
-    return params.get('tmux_pane');
+    const pane = params.get('tmux_pane');
+    if (pane && /^%\d+$/.test(pane)) return pane;
+    return null;
   }, []);
 
   const tmuxProjectDir = useMemo(() => {
     const params = new URLSearchParams(window.location.search);
-    return params.get('project_dir') ?? undefined;
+    const dir = params.get('project_dir');
+    if (dir && dir.startsWith('/')) return dir;
+    return undefined;
   }, []);
 
   // Check setup status on mount (skip for tmux viewer windows)
