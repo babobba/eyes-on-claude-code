@@ -522,14 +522,22 @@ fn main() {
                     })
                     .unwrap_or((None, None));
                 if let Some(port) = api_port {
-                    api_server::start_api_server(
-                        port,
-                        api_token,
-                        app.handle().clone(),
-                        Arc::clone(&state_clone),
-                        Arc::clone(&notification_sinks),
-                        Arc::clone(&notification_history),
-                    );
+                    if port >= 1024 {
+                        api_server::start_api_server(
+                            port,
+                            api_token,
+                            app.handle().clone(),
+                            Arc::clone(&state_clone),
+                            Arc::clone(&notification_sinks),
+                            Arc::clone(&notification_history),
+                        );
+                    } else {
+                        log::warn!(
+                            target: "eocc.api",
+                            "Ignoring api_port {} (must be >= 1024)",
+                            port
+                        );
+                    }
                 }
             }
 
