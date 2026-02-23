@@ -49,6 +49,19 @@ function whichCommand(cmd) {
   }
 }
 
+// Resolve the tmux session name that owns a given pane ID (e.g. "%3").
+function resolveTmuxSession(paneId) {
+  if (!/^%\d+$/.test(paneId)) return "";
+  try {
+    return execSync(
+      `tmux display-message -p -t ${paneId} "#{session_name}"`,
+      { encoding: "utf8", timeout: 3000 }
+    ).trim();
+  } catch {
+    return "";
+  }
+}
+
 async function readStdin() {
   if (process.stdin.isTTY) return "{}";
   const chunks = [];
@@ -77,6 +90,10 @@ async function main() {
   const projectDir = process.env.CLAUDE_PROJECT_DIR || "unknown";
   const projectName = basename(projectDir) || "unknown";
   const tmuxPane = process.env.TMUX_PANE || "";
+
+  // Resolve tmux session name from the pane ID so connect URLs can include
+  // `tmux attach -t <session>`, landing the user in the right session.
+  const tmuxSession = tmuxPane ? resolveTmuxSession(tmuxPane) : "";
 
   // Detect network transport for remote sessions
   const sshConnection = process.env.SSH_CONNECTION || "";
@@ -133,6 +150,7 @@ async function main() {
       transport_host: transportHost,
       transport_port: transportPort,
       transport_user: transportUser,
+      tmux_session: tmuxSession,
     };
     postWebhook(webhookUrl, JSON.stringify(webhookPayload));
   }
@@ -146,7 +164,15 @@ async function main() {
   const NOTIFY_EVENTS = new Set(["notification", "stop", "session_start", "session_end"]);
   if (NOTIFY_EVENTS.has(eventType)) {
     const waitingInfo = message || toolName;
-    const transport = { type: transportType, host: transportHost, port: transportPort, user: transportUser };
+    const transport = {
+      type: transportType,
+      host: transportHost,
+      port: transportPort,
+      user: transportUser,
+      tmux_session: tmuxSession,
+      tmux_pane: tmuxPane,
+      viewer_url: process.env.EOCC_VIEWER_URL || "",
+    };
     await tryDispatchNotification(home, eventType, notificationType, projectDir, projectName, waitingInfo, transport);
   }
 }
@@ -354,17 +380,42 @@ function resolveForProject(settings, projectDir) {
 
 // Builds a tappable URI from transport info.
 // ssh:// and mosh:// are handled by mobile terminals (Blink, Termius, Prompt).
+//
+// When a tmux session name is known the SSH URL includes it as a remote command
+// so the terminal app lands directly in the right tmux session:
+//   ssh://user@host;tmux attach -t mysession
+//
+// If EOCC_VIEWER_URL is set, an HTTP URL pointing at the web tmux viewer is
+// returned instead — useful when the host is reachable over Tailscale HTTP
+// (e.g. Tailscale Funnel or a direct 100.x.y.z address).
 function buildConnectUrl(transport) {
-  if (!transport || !transport.host || transport.type === "local") return "";
+  if (!transport) return "";
+
+  // HTTP viewer URL takes priority when set — works over Tailscale without
+  // needing an SSH client on the mobile device.
+  if (transport.viewer_url) {
+    let url = transport.viewer_url.replace(/\/+$/, "");
+    if (transport.tmux_pane) {
+      url += `/tmux/${encodeURIComponent(transport.tmux_pane)}`;
+    }
+    return url;
+  }
+
+  if (!transport.host || transport.type === "local") return "";
+
   const user = transport.user ? `${transport.user}@` : "";
+  const tmuxCmd = transport.tmux_session
+    ? `;tmux attach -t ${transport.tmux_session}`
+    : "";
+
   switch (transport.type) {
     case "ssh":
     case "tailscale": {
       const port = transport.port && transport.port !== "22" ? `:${transport.port}` : "";
-      return `ssh://${user}${transport.host}${port}`;
+      return `ssh://${user}${transport.host}${port}${tmuxCmd}`;
     }
     case "mosh":
-      return `mosh://${user}${transport.host}`;
+      return `mosh://${user}${transport.host}${tmuxCmd}`;
     default:
       return "";
   }
@@ -379,7 +430,9 @@ function applyTemplate(template, vars) {
     .replace(/\{message\}/g, vars.message)
     .replace(/\{priority\}/g, vars.priority)
     .replace(/\{connect_url\}/g, vars.connectUrl)
-    .replace(/\{transport_type\}/g, vars.transportType);
+    .replace(/\{transport_type\}/g, vars.transportType)
+    .replace(/\{tmux_session\}/g, vars.tmuxSession)
+    .replace(/\{tmux_pane\}/g, vars.tmuxPane);
 }
 
 function buildNotification(settings, projectName, projectDir, status, message, transport) {
@@ -388,10 +441,13 @@ function buildNotification(settings, projectName, projectDir, status, message, t
   const priority = mapPriority(status);
   const connectUrl = buildConnectUrl(transport);
   const transportType = (transport && transport.type) || "local";
+  const tmuxSession = (transport && transport.tmux_session) || "";
+  const tmuxPane = (transport && transport.tmux_pane) || "";
 
   const vars = {
     projectName, projectDir, statusLabel, emoji,
     message: message || "", priority, connectUrl, transportType,
+    tmuxSession, tmuxPane,
   };
 
   const title = settings.title_template
@@ -406,7 +462,7 @@ function buildNotification(settings, projectName, projectDir, status, message, t
     ? applyTemplate(settings.body_template, vars)
     : defaultBody;
 
-  return { title, body, priority, status, projectName, projectDir, connectUrl };
+  return { title, body, priority, status, projectName, projectDir, connectUrl, tmuxSession, tmuxPane };
 }
 
 // Hook state: tracks per-session status and cooldown timestamps.
@@ -500,6 +556,8 @@ function sendWebhookChannel(channel, notification) {
     status: notification.status,
     priority: notification.priority,
     connect_url: notification.connectUrl || null,
+    tmux_session: notification.tmuxSession || null,
+    tmux_pane: notification.tmuxPane || null,
   });
   return httpPostWithRetry(channel.url, { "Content-Type": "application/json" }, payload);
 }
