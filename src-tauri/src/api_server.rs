@@ -1,76 +1,15 @@
 use std::collections::HashMap;
-use std::io::Read;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use crate::events::apply_events_to_state;
 use crate::persist::{create_runtime_snapshot, save_runtime_snapshot};
-use crate::state::{AppState, EventInfo, Transport};
+use crate::state::{AppState, EventInfo, SessionStatus, Transport};
 use crate::tmux;
 use crate::tray::{emit_state_update, update_tray_and_badge};
 use eocc_core::notifications::{self, NotificationSink};
 
 const WEB_TMUX_VIEWER_HTML: &str = include_str!("web_tmux_viewer.html");
-
-fn to_core_status(s: &crate::state::SessionStatus) -> eocc_core::state::SessionStatus {
-    match s {
-        crate::state::SessionStatus::Active => eocc_core::state::SessionStatus::Active,
-        crate::state::SessionStatus::WaitingPermission => {
-            eocc_core::state::SessionStatus::WaitingPermission
-        }
-        crate::state::SessionStatus::WaitingInput => eocc_core::state::SessionStatus::WaitingInput,
-        crate::state::SessionStatus::Completed => eocc_core::state::SessionStatus::Completed,
-    }
-}
-
-fn to_core_transport(t: &crate::state::Transport) -> eocc_core::state::Transport {
-    match t {
-        Transport::Local {} => eocc_core::state::Transport::Local {},
-        Transport::Ssh {
-            host,
-            port,
-            user,
-            identity_file,
-        } => eocc_core::state::Transport::Ssh {
-            host: host.clone(),
-            port: *port,
-            user: user.clone(),
-            identity_file: identity_file.clone(),
-        },
-        Transport::Mosh {
-            host,
-            port,
-            user,
-            mosh_port,
-        } => eocc_core::state::Transport::Mosh {
-            host: host.clone(),
-            port: *port,
-            user: user.clone(),
-            mosh_port: *mosh_port,
-        },
-        Transport::Tailscale {
-            host,
-            user,
-            identity_file,
-        } => eocc_core::state::Transport::Tailscale {
-            host: host.clone(),
-            user: user.clone(),
-            identity_file: identity_file.clone(),
-        },
-    }
-}
-
-fn to_core_session_info(s: &crate::state::SessionInfo) -> eocc_core::state::SessionInfo {
-    eocc_core::state::SessionInfo {
-        project_name: s.project_name.clone(),
-        project_dir: s.project_dir.clone(),
-        status: to_core_status(&s.status),
-        last_event: s.last_event.clone(),
-        waiting_for: s.waiting_for.clone(),
-        tmux_pane: s.tmux_pane.clone(),
-        transport: to_core_transport(&s.transport),
-    }
-}
 
 pub fn start_api_server(
     port: u16,
@@ -100,7 +39,7 @@ pub fn start_api_server(
 
         for request in server.incoming_requests() {
             let url = request.url().to_string();
-            let method = request.method().as_ref().to_string();
+            let method = request.method().to_string();
 
             // Parse path and query string
             let (path, query) = match url.split_once('?') {
@@ -108,7 +47,8 @@ pub fn start_api_server(
                 None => (url.clone(), String::new()),
             };
 
-            match (method.as_str(), path.as_str()) {
+            let path_str: &str = &path;
+            match (method.as_str(), path_str) {
                 ("POST", "/api/events") => {
                     handle_post_events(
                         request,
@@ -276,10 +216,10 @@ fn handle_post_events(
         };
 
         // Capture old statuses
-        let old_statuses: HashMap<String, eocc_core::state::SessionStatus> = state_guard
+        let old_statuses: HashMap<String, SessionStatus> = state_guard
             .sessions
             .iter()
-            .map(|(k, v)| (k.clone(), to_core_status(&v.status)))
+            .map(|(k, v)| (k.clone(), v.status.clone()))
             .collect();
 
         apply_events_to_state(&mut state_guard, &events);
@@ -294,14 +234,9 @@ fn handle_post_events(
                 .unwrap_or(false);
         let cooldown_secs = state_guard.notification_settings.cooldown_seconds;
         let pending = if sinks_active {
-            let core_sessions: HashMap<String, eocc_core::state::SessionInfo> = state_guard
-                .sessions
-                .iter()
-                .map(|(k, v)| (k.clone(), to_core_session_info(v)))
-                .collect();
             notifications::detect_status_transitions(
                 &old_statuses,
-                &core_sessions,
+                &state_guard.sessions,
                 &state_guard.notification_settings,
             )
         } else {

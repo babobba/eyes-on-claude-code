@@ -43,7 +43,9 @@ use persist::{create_runtime_snapshot, load_runtime_state, save_runtime_snapshot
 use settings::{
     get_app_log_dir, get_log_dir, load_notification_settings, load_settings, save_settings,
 };
-use state::{AppState, ManagedState, NotificationHistoryState, NotificationSinksState};
+use state::{
+    AppState, ManagedState, NotificationHistoryState, NotificationSinksState, SessionStatus,
+};
 use tray::{emit_state_update, update_tray_and_badge};
 
 fn show_dashboard(app: &tauri::AppHandle) {
@@ -83,66 +85,6 @@ fn create_dashboard_window(
     match Image::from_bytes(ICON_NORMAL) {
         Ok(icon) => base_builder.icon(icon)?.build(),
         Err(_) => base_builder.build(),
-    }
-}
-
-fn to_core_status(s: &crate::state::SessionStatus) -> eocc_core::state::SessionStatus {
-    match s {
-        crate::state::SessionStatus::Active => eocc_core::state::SessionStatus::Active,
-        crate::state::SessionStatus::WaitingPermission => {
-            eocc_core::state::SessionStatus::WaitingPermission
-        }
-        crate::state::SessionStatus::WaitingInput => eocc_core::state::SessionStatus::WaitingInput,
-        crate::state::SessionStatus::Completed => eocc_core::state::SessionStatus::Completed,
-    }
-}
-
-fn to_core_transport(t: &crate::state::Transport) -> eocc_core::state::Transport {
-    match t {
-        crate::state::Transport::Local {} => eocc_core::state::Transport::Local {},
-        crate::state::Transport::Ssh {
-            host,
-            port,
-            user,
-            identity_file,
-        } => eocc_core::state::Transport::Ssh {
-            host: host.clone(),
-            port: *port,
-            user: user.clone(),
-            identity_file: identity_file.clone(),
-        },
-        crate::state::Transport::Mosh {
-            host,
-            port,
-            user,
-            mosh_port,
-        } => eocc_core::state::Transport::Mosh {
-            host: host.clone(),
-            port: *port,
-            user: user.clone(),
-            mosh_port: *mosh_port,
-        },
-        crate::state::Transport::Tailscale {
-            host,
-            user,
-            identity_file,
-        } => eocc_core::state::Transport::Tailscale {
-            host: host.clone(),
-            user: user.clone(),
-            identity_file: identity_file.clone(),
-        },
-    }
-}
-
-fn to_core_session_info(s: &crate::state::SessionInfo) -> eocc_core::state::SessionInfo {
-    eocc_core::state::SessionInfo {
-        project_name: s.project_name.clone(),
-        project_dir: s.project_dir.clone(),
-        status: to_core_status(&s.status),
-        last_event: s.last_event.clone(),
-        waiting_for: s.waiting_for.clone(),
-        tmux_pane: s.tmux_pane.clone(),
-        transport: to_core_transport(&s.transport),
     }
 }
 
@@ -197,14 +139,11 @@ fn start_file_watcher(
                                 continue;
                             };
 
-                            // Capture old statuses before applying events (converted to core types)
-                            let old_statuses: std::collections::HashMap<
-                                String,
-                                eocc_core::state::SessionStatus,
-                            > = state_guard
+                            // Capture old statuses before applying events
+                            let old_statuses: HashMap<String, SessionStatus> = state_guard
                                 .sessions
                                 .iter()
-                                .map(|(k, v)| (k.clone(), to_core_status(&v.status)))
+                                .map(|(k, v)| (k.clone(), v.status.clone()))
                                 .collect();
 
                             apply_events_to_state(&mut state_guard, &new_events);
@@ -219,17 +158,9 @@ fn start_file_watcher(
                                     .unwrap_or(false);
                             let cooldown_secs = state_guard.notification_settings.cooldown_seconds;
                             let pending = if sinks_active {
-                                let core_sessions: std::collections::HashMap<
-                                    String,
-                                    eocc_core::state::SessionInfo,
-                                > = state_guard
-                                    .sessions
-                                    .iter()
-                                    .map(|(k, v)| (k.clone(), to_core_session_info(v)))
-                                    .collect();
                                 notifications::detect_status_transitions(
                                     &old_statuses,
-                                    &core_sessions,
+                                    &state_guard.sessions,
                                     &state_guard.notification_settings,
                                 )
                             } else {
