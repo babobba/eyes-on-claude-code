@@ -56,13 +56,52 @@ fn validate_pane_id(pane_id: &str) -> Result<(), String> {
     }
 }
 
+/// Validate SSH hostname: alphanumeric, dots, hyphens, colons (IPv6), and brackets.
+fn validate_ssh_host(host: &str) -> Result<(), String> {
+    if host.is_empty() {
+        return Err("SSH host cannot be empty".to_string());
+    }
+    if host.starts_with('-') {
+        return Err(format!("SSH host must not start with '-': {}", host));
+    }
+    if !host
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || ".-:[]_".contains(c))
+    {
+        return Err(format!("SSH host contains invalid characters: {}", host));
+    }
+    Ok(())
+}
+
+/// Validate SSH username: alphanumeric, underscore, hyphen, dot.
+fn validate_ssh_user(user: &str) -> Result<(), String> {
+    if user.is_empty() {
+        return Err("SSH user cannot be empty".to_string());
+    }
+    if user.starts_with('-') {
+        return Err(format!("SSH user must not start with '-': {}", user));
+    }
+    if !user
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c))
+    {
+        return Err(format!("SSH user contains invalid characters: {}", user));
+    }
+    Ok(())
+}
+
 /// Build SSH command arguments for a remote transport.
 fn build_ssh_args(
     host: &str,
     port: u16,
     user: &Option<String>,
     identity_file: &Option<String>,
-) -> Vec<String> {
+) -> Result<Vec<String>, String> {
+    validate_ssh_host(host)?;
+    if let Some(u) = user {
+        validate_ssh_user(u)?;
+    }
+
     let mut args = vec![
         "-o".to_string(),
         "BatchMode=yes".to_string(),
@@ -80,7 +119,7 @@ fn build_ssh_args(
         None => host.to_string(),
     };
     args.push(target);
-    args
+    Ok(args)
 }
 
 /// Execute a command, routing through the session's transport if remote.
@@ -109,7 +148,7 @@ fn run_via_transport(
             user,
             identity_file,
         } => {
-            let mut ssh_args = build_ssh_args(host, *port, user, identity_file);
+            let mut ssh_args = build_ssh_args(host, *port, user, identity_file)?;
             ssh_args.push(program.to_string());
             ssh_args.extend(args.iter().map(|a| a.to_string()));
             let str_args: Vec<&str> = ssh_args.iter().map(|s| s.as_str()).collect();
@@ -150,6 +189,10 @@ fn run_via_transport(
                 .unwrap_or(false);
 
             if tailscale_available {
+                validate_ssh_host(host)?;
+                if let Some(u) = user {
+                    validate_ssh_user(u)?;
+                }
                 let target = match user {
                     Some(u) => format!("{}@{}", u, host),
                     None => host.clone(),
