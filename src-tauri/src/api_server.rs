@@ -12,6 +12,7 @@ const WEB_TMUX_VIEWER_HTML: &str = include_str!("web_tmux_viewer.html");
 
 pub fn start_api_server(
     port: u16,
+    api_token: Option<String>,
     app_handle: tauri::AppHandle,
     state: Arc<Mutex<AppState>>,
     notification_sinks: Arc<Mutex<Vec<Box<dyn NotificationSink>>>>,
@@ -32,11 +33,30 @@ pub fn start_api_server(
             }
         };
 
-        log::info!(target: "eocc.api", "API server listening on {}", addr);
+        if api_token.is_some() {
+            log::info!(target: "eocc.api", "API server listening on {} (token auth enabled)", addr);
+        } else {
+            log::info!(target: "eocc.api", "API server listening on {} (no auth)", addr);
+        }
 
         let mut last_notified: HashMap<String, Instant> = HashMap::new();
 
         for request in server.incoming_requests() {
+            // Verify bearer token if configured
+            if let Some(ref token) = api_token {
+                let authorized = request
+                    .headers()
+                    .iter()
+                    .any(|h| {
+                        h.field.equiv("Authorization")
+                            && h.value.as_str() == format!("Bearer {}", token)
+                    });
+                if !authorized {
+                    json_response(request, 401, r#"{"error":"Unauthorized"}"#);
+                    continue;
+                }
+            }
+
             let url = request.url().to_string();
             let method = request.method().to_string();
 

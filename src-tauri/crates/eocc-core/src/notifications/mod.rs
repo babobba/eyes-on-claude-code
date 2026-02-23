@@ -139,6 +139,8 @@ pub struct NotificationSettings {
     #[serde(default)]
     pub api_port: Option<u16>,
     #[serde(default)]
+    pub api_token: Option<String>,
+    #[serde(default)]
     pub external_url: Option<String>,
 }
 
@@ -218,6 +220,7 @@ impl Default for NotificationSettings {
             title_template: None,
             body_template: None,
             api_port: None,
+            api_token: None,
             external_url: None,
         }
     }
@@ -449,6 +452,7 @@ mod tests {
             title_template: None,
             body_template: None,
             api_port: None,
+            api_token: None,
             external_url: None,
         }
     }
@@ -621,6 +625,7 @@ mod tests {
             title_template: None,
             body_template: None,
             api_port: None,
+            api_token: None,
             external_url: None,
         };
         let toml_str = toml::to_string_pretty(&settings).unwrap();
@@ -684,6 +689,7 @@ channels = []
             title_template: None,
             body_template: None,
             api_port: None,
+            api_token: None,
             external_url: None,
         };
 
@@ -800,6 +806,7 @@ channels = []
             title_template: None,
             body_template: None,
             api_port: None,
+            api_token: None,
             external_url: None,
         };
         let notifications = detect_status_transitions(&old, &new_sessions, &settings);
@@ -828,6 +835,7 @@ channels = []
             title_template: None,
             body_template: None,
             api_port: None,
+            api_token: None,
             external_url: None,
         };
         let notifications = detect_status_transitions(&old, &new_sessions, &settings);
@@ -906,6 +914,7 @@ channels = []
             title_template: None,
             body_template: None,
             api_port: None,
+            api_token: None,
             external_url: None,
         };
         let toml_str = toml::to_string_pretty(&settings).unwrap();
@@ -988,6 +997,7 @@ channels = []
             title_template: Some("{project_name}: {status}".to_string()),
             body_template: Some("{message}".to_string()),
             api_port: None,
+            api_token: None,
             external_url: None,
         };
         let notifications = detect_status_transitions(&old, &new_sessions, &settings);
@@ -1006,6 +1016,7 @@ channels = []
             title_template: Some("{emoji} {project_name}".to_string()),
             body_template: Some("{status}: {message}".to_string()),
             api_port: None,
+            api_token: None,
             external_url: None,
         };
         let toml_str = toml::to_string_pretty(&settings).unwrap();

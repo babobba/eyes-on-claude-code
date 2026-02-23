@@ -511,13 +511,20 @@ fn main() {
 
             // Start API server if api_port is configured
             {
-                let api_port = state_clone
+                let (api_port, api_token) = state_clone
                     .lock()
                     .ok()
-                    .and_then(|s| s.notification_settings.api_port);
+                    .map(|s| {
+                        (
+                            s.notification_settings.api_port,
+                            s.notification_settings.api_token.clone(),
+                        )
+                    })
+                    .unwrap_or((None, None));
                 if let Some(port) = api_port {
                     api_server::start_api_server(
                         port,
+                        api_token,
                         app.handle().clone(),
                         Arc::clone(&state_clone),
                         Arc::clone(&notification_sinks),
