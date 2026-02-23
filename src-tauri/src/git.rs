@@ -13,10 +13,15 @@ pub struct GitInfo {
     pub is_git_repo: bool,
 }
 
+/// Validate that a repo path is absolute and is a directory (no traversal).
+fn validate_repo_path(repo_path: &str) -> bool {
+    let path = Path::new(repo_path);
+    path.is_absolute() && path.is_dir()
+}
+
 /// Get git information for a repository
 pub fn get_git_info(repo_path: &str) -> GitInfo {
-    let path = Path::new(repo_path);
-    if !path.exists() {
+    if !validate_repo_path(repo_path) {
         return GitInfo::default();
     }
 
@@ -96,8 +101,7 @@ fn check_staged_changes(repo_path: &str) -> bool {
 
 /// Get list of local branches for a repository
 pub fn get_branches(repo_path: &str) -> Vec<String> {
-    let path = Path::new(repo_path);
-    if !path.exists() {
+    if !validate_repo_path(repo_path) {
         return Vec::new();
     }
 
