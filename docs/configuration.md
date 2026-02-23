@@ -51,7 +51,13 @@ body_template = "{message}"
 
 # Desktop app API server port (optional)
 # Enables the embedded HTTP API for external integrations
+# Must be >= 1024; ports below 1024 are rejected
 api_port = 8081
+
+# Bearer token for API server authentication (optional)
+# When set, all API requests must include an Authorization header:
+#   Authorization: Bearer <token>
+api_token = "my-secret-token"
 
 # External URL for click-through links in notifications (optional)
 # Points to your eocc-server instance
