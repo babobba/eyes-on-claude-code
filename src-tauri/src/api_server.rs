@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::io::Read;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -102,10 +103,21 @@ pub fn start_api_server(
     });
 }
 
+const MAX_BODY_SIZE: u64 = 1024 * 1024; // 1 MB
+const MAX_URL_COMPONENT: usize = 1024;
+
 fn read_body(request: &mut tiny_http::Request) -> Result<String, String> {
+    let content_length = request.body_length().unwrap_or(0);
+    if content_length > MAX_BODY_SIZE as usize {
+        return Err(format!(
+            "Request body too large: {} bytes (max {})",
+            content_length, MAX_BODY_SIZE
+        ));
+    }
     let mut body = String::new();
     request
         .as_reader()
+        .take(MAX_BODY_SIZE)
         .read_to_string(&mut body)
         .map_err(|e| format!("Failed to read request body: {}", e))?;
     Ok(body)
@@ -125,6 +137,9 @@ fn parse_query(query: &str) -> HashMap<String, String> {
 }
 
 fn urldecode(s: &str) -> String {
+    if s.len() > MAX_URL_COMPONENT {
+        return String::new();
+    }
     let mut result = Vec::new();
     let bytes = s.as_bytes();
     let mut i = 0;
