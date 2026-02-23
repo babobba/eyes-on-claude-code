@@ -18,7 +18,7 @@ pub fn start_api_server(
     notification_history: Arc<Mutex<notifications::history::NotificationHistory>>,
 ) {
     std::thread::spawn(move || {
-        let addr = format!("0.0.0.0:{}", port);
+        let addr = format!("127.0.0.1:{}", port);
         let server = match tiny_http::Server::http(&addr) {
             Ok(s) => s,
             Err(e) => {
