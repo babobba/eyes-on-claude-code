@@ -8,7 +8,6 @@ import {
   getSettings,
   getRepoGitInfo,
   getRepoBranches,
-  openDiff,
   getSetupStatus,
   checkClaudeSettings,
   openClaudeSettings,
@@ -65,26 +64,6 @@ describe('Tauri command wrappers', () => {
     mockInvoke.mockResolvedValue([]);
     await getRepoBranches('/repo');
     expect(mockInvoke).toHaveBeenCalledWith('get_repo_branches', { projectDir: '/repo' });
-  });
-
-  it('openDiff passes all parameters', async () => {
-    mockInvoke.mockResolvedValue(undefined);
-    await openDiff('/repo', 'unstaged', 'main');
-    expect(mockInvoke).toHaveBeenCalledWith('open_diff', {
-      projectDir: '/repo',
-      diffType: 'unstaged',
-      baseBranch: 'main',
-    });
-  });
-
-  it('openDiff works without baseBranch', async () => {
-    mockInvoke.mockResolvedValue(undefined);
-    await openDiff('/repo', 'staged');
-    expect(mockInvoke).toHaveBeenCalledWith('open_diff', {
-      projectDir: '/repo',
-      diffType: 'staged',
-      baseBranch: undefined,
-    });
   });
 
   it('getSetupStatus invokes correct command', async () => {

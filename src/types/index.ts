@@ -92,9 +92,6 @@ export interface GitInfo {
   is_git_repo: boolean;
 }
 
-// Diff type for difit integration
-export type DiffType = 'unstaged' | 'staged' | 'commit' | 'branch';
-
 // Tmux pane information
 export interface TmuxPane {
   session_name: string;

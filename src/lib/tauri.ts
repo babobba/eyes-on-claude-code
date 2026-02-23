@@ -1,9 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import { getCurrentWindow, getAllWindows } from '@tauri-apps/api/window';
 import type {
   DashboardData,
-  DiffType,
   GitInfo,
   NotificationRecord,
   NotificationSettings,
@@ -23,11 +21,6 @@ export const getRepoGitInfo = (projectDir: string) =>
 
 export const getRepoBranches = (projectDir: string) =>
   invoke<string[]>('get_repo_branches', { projectDir });
-
-export type { DiffType };
-
-export const openDiff = (projectDir: string, diffType: DiffType, baseBranch?: string) =>
-  invoke('open_diff', { projectDir, diffType, baseBranch });
 
 // Notification commands
 export const getNotificationSettings = () =>
@@ -57,22 +50,6 @@ export const onSettingsUpdated = (callback: (settings: Settings) => void): Promi
 
 export const onWindowFocus = (callback: () => void): Promise<UnlistenFn> => {
   return listen('tauri://focus', callback);
-};
-
-// Bring all diff windows to front
-export const bringDiffWindowsToFront = async (): Promise<void> => {
-  const windows = await getAllWindows();
-  const diffWindows = windows.filter((w) => w.label.startsWith('difit-'));
-
-  for (const window of diffWindows) {
-    await window.show();
-    await window.unminimize();
-    await window.setFocus();
-  }
-
-  // Re-focus dashboard to keep it on top
-  const dashboard = getCurrentWindow();
-  await dashboard.setFocus();
 };
 
 // Tmux commands

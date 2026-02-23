@@ -17,7 +17,7 @@ desktop_notifications = ["eocc-core/desktop_notifications"]
 
 [dependencies]
 eocc-core = { path = "crates/eocc-core" }
-tauri = { version = "2", features = ["tray-icon", "image-png", "macos-private-api", "webview-data-url"] }
+tauri = { version = "2", features = ["tray-icon", "image-png", "macos-private-api"] }
 tauri-plugin-shell = "2"
 tauri-plugin-log = "2"
 log = "0.4"
@@ -27,7 +27,6 @@ notify = "8"
 dirs = "6"
 opener = "0.8"
 anyhow = "1"
-base64 = "0.22"
 urlencoding = "2"
 tiny_http = "0.12"
 

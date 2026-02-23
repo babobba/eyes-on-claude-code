@@ -3,7 +3,6 @@
 mod api_server;
 mod commands;
 mod constants;
-mod difit;
 mod events;
 mod git;
 mod menu;
@@ -25,7 +24,6 @@ use tauri::{
     Emitter, Manager, WebviewUrl, WebviewWindowBuilder,
 };
 
-use difit::DifitProcessRegistry;
 use eocc_core::notifications::{self, NotificationSink};
 use tauri_plugin_log::RotationStrategy;
 
@@ -33,7 +31,7 @@ use commands::{
     check_claude_settings, clear_all_sessions, clear_notification_history, get_always_on_top,
     get_dashboard_data, get_notification_history, get_notification_settings, get_repo_branches,
     get_repo_git_info, get_settings, get_setup_status, install_hook, open_claude_settings,
-    open_diff, open_tmux_viewer, remove_session, send_test_notification, set_always_on_top,
+    open_tmux_viewer, remove_session, send_test_notification, set_always_on_top,
     set_opacity_active, set_opacity_inactive, set_window_size_for_setup, tmux_capture_pane,
     tmux_get_pane_size, tmux_is_available, tmux_list_panes, tmux_send_keys,
     update_notification_settings,
@@ -345,11 +343,9 @@ fn start_config_watcher(
 
 fn main() {
     let state = Arc::new(Mutex::new(AppState::default()));
-    let difit_registry = Arc::new(DifitProcessRegistry::new());
 
     let state_clone = Arc::clone(&state);
     let state_for_managed = Arc::clone(&state);
-    let difit_registry_clone = Arc::clone(&difit_registry);
 
     tauri::Builder::default()
         .plugin(
@@ -361,7 +357,6 @@ fn main() {
         )
         .plugin(tauri_plugin_shell::init())
         .manage(ManagedState(state_for_managed))
-        .manage(difit_registry_clone)
         .invoke_handler(tauri::generate_handler![
             get_dashboard_data,
             remove_session,
@@ -373,7 +368,6 @@ fn main() {
             set_opacity_inactive,
             get_repo_git_info,
             get_repo_branches,
-            open_diff,
             set_window_size_for_setup,
             // Setup commands
             get_setup_status,
@@ -474,20 +468,12 @@ fn main() {
                 }
             }
 
-            // Hide dashboard and close all diff windows when close button is clicked
+            // Hide dashboard when close button is clicked
             let app_handle_for_close = app_handle.clone();
             dashboard_window.on_window_event(move |event| {
                 if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                     api.prevent_close();
 
-                    // Close all diff windows
-                    for (label, window) in app_handle_for_close.webview_windows() {
-                        if label.starts_with("difit-") {
-                            let _ = window.close();
-                        }
-                    }
-
-                    // Hide dashboard
                     if let Some(window) = app_handle_for_close.get_webview_window("dashboard") {
                         let _ = window.hide();
                     }
@@ -675,20 +661,11 @@ fn main() {
                 let app = window.app_handle();
 
                 if label == "dashboard" {
-                    // Dashboard focus changed - emit event directly
                     let _ = app.emit_to("dashboard", "dashboard-active", *focused);
-                } else if label.starts_with("difit-") && *focused {
-                    // A difit window gained focus - dashboard should be inactive
-                    let _ = app.emit_to("dashboard", "dashboard-active", false);
                 }
             }
         })
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(move |_app_handle, event| {
-            if let tauri::RunEvent::Exit = event {
-                // Kill all difit processes on app exit
-                difit_registry.kill_all();
-            }
-        });
+        .run(|_app_handle, _event| {});
 }

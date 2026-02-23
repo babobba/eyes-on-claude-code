@@ -16,12 +16,7 @@ import { NotificationSettings } from '@/components/NotificationSettings';
 import { SessionList } from '@/components/SessionList';
 import { SetupModal } from '@/components/SetupModal';
 import { TmuxViewer } from '@/components/TmuxViewer';
-import {
-  onWindowFocus,
-  bringDiffWindowsToFront,
-  getSetupStatus,
-  setWindowSizeForSetup,
-} from '@/lib/tauri';
+import { getSetupStatus, setWindowSizeForSetup } from '@/lib/tauri';
 import { allHooksConfigured } from '@/lib/utils';
 import type { SetupStatus } from '@/types';
 
@@ -301,29 +296,6 @@ const Dashboard = () => {
 
   // Handle window drag
   useWindowDrag();
-
-  // Bring diff windows to front when dashboard is focused (via Cmd+Tab etc.)
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    let mounted = true;
-
-    onWindowFocus(() => {
-      bringDiffWindowsToFront().catch(console.error);
-    })
-      .then((u) => {
-        if (mounted) {
-          unlisten = u;
-        } else {
-          u();
-        }
-      })
-      .catch(console.error);
-
-    return () => {
-      mounted = false;
-      unlisten?.();
-    };
-  }, []);
 
   if (isLoading) {
     return (

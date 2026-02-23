@@ -1,17 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import type { SessionInfo, GitInfo } from '@/types';
 import { getStatusEmoji, getStatusClass, formatRelativeTime } from '@/lib/utils';
-import {
-  removeSession,
-  getRepoGitInfo,
-  getRepoBranches,
-  openDiff,
-  openTmuxViewer,
-  type DiffType,
-} from '@/lib/tauri';
+import { removeSession, getRepoGitInfo, openTmuxViewer } from '@/lib/tauri';
 import { ChevronDownIcon } from './icons';
-import { DiffButton } from './DiffButton';
-import { BranchCombobox } from './BranchCombobox';
 
 const FOCUS_REFRESH_MIN_INTERVAL = 5000;
 
@@ -25,8 +16,6 @@ export const SessionCard = ({ session }: SessionCardProps) => {
   const [isLoadingGit, setIsLoadingGit] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [relativeTime, setRelativeTime] = useState(() => formatRelativeTime(session.last_event));
-  const [branches, setBranches] = useState<string[]>([]);
-  const [selectedBaseBranch, setSelectedBaseBranch] = useState<string>('');
   const isLoadingGitRef = useRef(false);
   const lastFocusFetchTimeRef = useRef(0);
 
@@ -81,31 +70,10 @@ export const SessionCard = ({ session }: SessionCardProps) => {
     }
   }, [session.project_dir]);
 
-  // Reset git info and branches when session event changes (e.g., after commit)
+  // Reset git info when session event changes (e.g., after commit)
   useEffect(() => {
     setGitInfo(null);
-    setBranches([]);
-    setSelectedBaseBranch('');
   }, [session.last_event]);
-
-  // Initialize selectedBaseBranch when gitInfo loads
-  useEffect(() => {
-    if (gitInfo?.default_branch && !selectedBaseBranch) {
-      setSelectedBaseBranch(gitInfo.default_branch);
-    }
-  }, [gitInfo?.default_branch, selectedBaseBranch]);
-
-  // Fetch branches when expanded
-  useEffect(() => {
-    if (isExpanded && branches.length === 0) {
-      getRepoBranches(session.project_dir)
-        .then(setBranches)
-        .catch((err) => {
-          const message = err instanceof Error ? err.message : String(err);
-          setError(`Failed to load branches: ${message}`);
-        });
-    }
-  }, [isExpanded, branches.length, session.project_dir]);
 
   // Load git info when expanded
   useEffect(() => {
@@ -129,19 +97,6 @@ export const SessionCard = ({ session }: SessionCardProps) => {
     window.addEventListener('focus', handleFocus);
     return () => window.removeEventListener('focus', handleFocus);
   }, [isExpanded, fetchGitInfo]);
-
-  const handleDiffClick = async (type: DiffType) => {
-    try {
-      setError(null);
-      const baseBranch =
-        type === 'branch' ? selectedBaseBranch || gitInfo?.default_branch : undefined;
-      await openDiff(session.project_dir, type, baseBranch);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      setError(message);
-      console.error('Failed to open diff:', err);
-    }
-  };
 
   const handleOpenTmuxViewer = async () => {
     if (!session.tmux_pane) return;
@@ -224,9 +179,6 @@ export const SessionCard = ({ session }: SessionCardProps) => {
                     {gitInfo.has_unstaged_changes ? 'Changed' : 'No changes'}
                   </span>
                 </div>
-                {gitInfo.has_unstaged_changes && (
-                  <DiffButton onClick={() => handleDiffClick('unstaged')} small />
-                )}
               </div>
 
               {/* Staged changes */}
@@ -241,43 +193,24 @@ export const SessionCard = ({ session }: SessionCardProps) => {
                     {gitInfo.has_staged_changes ? 'Changed' : 'No changes'}
                   </span>
                 </div>
-                {gitInfo.has_staged_changes && (
-                  <DiffButton onClick={() => handleDiffClick('staged')} small />
-                )}
               </div>
 
               {/* Latest commit */}
-              <div className="flex items-center justify-between py-0.5">
+              <div className="flex items-center py-0.5">
                 <div className="flex items-center gap-1 min-w-0">
                   <span className="text-text-secondary text-[0.625rem] shrink-0">commit:</span>
                   <span className="text-info text-[0.625rem] font-mono">
                     #{gitInfo.latest_commit_hash}
                   </span>
                 </div>
-                <DiffButton onClick={() => handleDiffClick('commit')} small />
               </div>
 
               {/* Branch */}
-              <div className="flex items-center justify-between py-0.5">
+              <div className="flex items-center py-0.5">
                 <div className="flex items-center gap-1 min-w-0">
                   <span className="text-text-secondary text-[0.625rem] shrink-0">branch:</span>
                   <span className="text-success text-[0.625rem] truncate">{gitInfo.branch}</span>
                 </div>
-              </div>
-
-              {/* Branch diff target */}
-              <div className="flex items-center justify-between py-0.5">
-                <div className="flex items-center gap-1 min-w-0">
-                  <span className="text-text-secondary text-[0.625rem] shrink-0">diff vs:</span>
-                  {branches.length > 0 && (
-                    <BranchCombobox
-                      branches={branches}
-                      value={selectedBaseBranch || gitInfo.default_branch}
-                      onSelect={setSelectedBaseBranch}
-                    />
-                  )}
-                </div>
-                <DiffButton onClick={() => handleDiffClick('branch')} small className="shrink-0" />
               </div>
             </>
           ) : (
