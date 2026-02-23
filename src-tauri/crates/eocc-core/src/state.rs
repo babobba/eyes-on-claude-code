@@ -49,6 +49,20 @@ pub enum EventType {
     Unknown,
 }
 
+impl EventType {
+    pub fn display_name(&self) -> &str {
+        match self {
+            EventType::SessionStart => "session_start",
+            EventType::SessionEnd => "session_end",
+            EventType::Notification => "notification",
+            EventType::Stop => "stop",
+            EventType::PostToolUse => "post_tool_use",
+            EventType::UserPromptSubmit => "user_prompt_submit",
+            EventType::Unknown => "unknown",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NotificationType {
@@ -90,6 +104,22 @@ pub struct EventInfo {
 }
 
 impl EventInfo {
+    pub fn emoji(&self) -> &str {
+        match &self.event_type {
+            EventType::Notification => match &self.notification_type {
+                NotificationType::PermissionPrompt => "🔐",
+                NotificationType::IdlePrompt => "⏳",
+                NotificationType::Other => "🔔",
+            },
+            EventType::Stop => "✅",
+            EventType::SessionStart => "🚀",
+            EventType::SessionEnd => "🏁",
+            EventType::PostToolUse => "🔧",
+            EventType::UserPromptSubmit => "💬",
+            EventType::Unknown => "📌",
+        }
+    }
+
     pub fn to_transport(&self) -> Transport {
         match self.transport_type.as_str() {
             "ssh" => Transport::Ssh {
