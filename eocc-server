@@ -1,0 +1,637 @@
+#!/usr/bin/env node
+/**
+ * eocc-server - Headless EOCC event poller, notification dispatcher, and tmux web viewer
+ *
+ * Usage: eocc-server [--port PORT] [--host HOST]
+ *
+ * Watches ~/.eocc/logs/events.jsonl for Claude Code session events, dispatches
+ * notifications via configured channels (ntfy, webhook, pushover), and serves
+ * a web-based tmux viewer for mobile access to Claude's permission prompts.
+ *
+ * If ttyd is installed, the viewer route launches ttyd for a full terminal
+ * experience. Otherwise, falls back to a capture-pane polling viewer.
+ *
+ * Environment variables:
+ *   EOCC_PORT  - HTTP listen port (default: 8080)
+ *   EOCC_HOST  - HTTP bind address (default: 0.0.0.0)
+ *   EOCC_DIR   - Override ~/.eocc directory
+ */
+
+const fs = require("node:fs");
+const path = require("node:path");
+const os = require("node:os");
+const http = require("node:http");
+const { execSync, spawn } = require("node:child_process");
+const lib = require("./eocc-lib.cjs");
+
+// ---------------------------------------------------------------------------
+// Configuration
+// ---------------------------------------------------------------------------
+
+function parseArgs() {
+  const args = process.argv.slice(2);
+  const config = {
+    port: parseInt(process.env.EOCC_PORT || "8080", 10),
+    host: process.env.EOCC_HOST || "0.0.0.0",
+    eoccDir: process.env.EOCC_DIR || path.join(os.homedir(), ".eocc"),
+  };
+  for (let i = 0; i < args.length; i++) {
+    if ((args[i] === "--port" || args[i] === "-p") && args[i + 1]) {
+      config.port = parseInt(args[++i], 10);
+    } else if ((args[i] === "--host" || args[i] === "-h") && args[i + 1]) {
+      config.host = args[++i];
+    } else if (args[i] === "--help") {
+      console.log("Usage: eocc-server [--port PORT] [--host HOST]");
+      console.log("");
+      console.log("Options:");
+      console.log("  --port, -p  HTTP listen port (default: 8080, env: EOCC_PORT)");
+      console.log("  --host, -h  HTTP bind address (default: 0.0.0.0, env: EOCC_HOST)");
+      console.log("");
+      console.log("Environment:");
+      console.log("  EOCC_DIR    Override ~/.eocc directory");
+      process.exit(0);
+    }
+  }
+  return config;
+}
+
+// ---------------------------------------------------------------------------
+// Logging
+// ---------------------------------------------------------------------------
+
+function log(category, msg) {
+  const ts = new Date().toISOString().slice(11, 19);
+  console.log(`[${ts}] [${category}] ${msg}`);
+}
+
+// ---------------------------------------------------------------------------
+// tmux helpers
+// ---------------------------------------------------------------------------
+
+function validatePaneId(paneId) {
+  return /^%\d+$/.test(paneId);
+}
+
+function tmuxCapture(paneId) {
+  return execSync(`tmux capture-pane -p -e -S - -E - -t ${paneId}`, {
+    encoding: "utf8",
+    timeout: 5000,
+  });
+}
+
+function tmuxSendKeys(paneId, keys) {
+  // Escape single quotes in keys for shell safety
+  const escaped = keys.replace(/'/g, "'\\''");
+  execSync(`tmux send-keys -t ${paneId} '${escaped}'`, { timeout: 5000 });
+}
+
+function findTtyd() {
+  try {
+    return execSync("which ttyd", { encoding: "utf8", timeout: 3000 }).trim();
+  } catch {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Web tmux viewer HTML (fallback when ttyd is not available)
+// ---------------------------------------------------------------------------
+
+const VIEWER_HTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>EOCC - tmux viewer</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #0d0d1a;
+    color: #e0e0e0;
+    font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
+    font-size: 13px;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .toolbar {
+    display: flex;
+    gap: 6px;
+    padding: 8px;
+    background: #1a1a2e;
+    border-bottom: 1px solid #2a2a3e;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+  .toolbar button {
+    background: #333;
+    color: #e0e0e0;
+    border: none;
+    padding: 6px 14px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 13px;
+    font-family: inherit;
+    transition: background 0.15s;
+  }
+  .toolbar button:hover { background: #444; }
+  .toolbar button:active { background: #555; }
+  .toolbar .approve { background: #27ae60; color: #fff; }
+  .toolbar .approve:hover { background: #2ecc71; }
+  .toolbar .deny { background: #c0392b; color: #fff; }
+  .toolbar .deny:hover { background: #e74c3c; }
+  .toolbar .status {
+    margin-left: auto;
+    font-size: 11px;
+    color: #888;
+  }
+  #terminal {
+    flex: 1;
+    overflow: auto;
+    padding: 8px;
+    white-space: pre;
+    line-height: 1.3;
+    -webkit-overflow-scrolling: touch;
+  }
+  .input-bar {
+    display: flex;
+    gap: 6px;
+    padding: 8px;
+    background: #1a1a2e;
+    border-top: 1px solid #2a2a3e;
+  }
+  .input-bar input {
+    flex: 1;
+    background: #0d0d1a;
+    color: #e0e0e0;
+    border: 1px solid #333;
+    padding: 8px 10px;
+    font-family: inherit;
+    font-size: 14px;
+    border-radius: 4px;
+    outline: none;
+  }
+  .input-bar input:focus { border-color: #6c5ce7; }
+  .input-bar button {
+    background: #6c5ce7;
+    color: #fff;
+    border: none;
+    padding: 8px 18px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 14px;
+    font-family: inherit;
+  }
+  .input-bar button:hover { background: #7d6ef0; }
+</style>
+</head>
+<body>
+<div class="toolbar">
+  <button class="approve" onclick="sendKeys('y\\n')">Approve</button>
+  <button class="deny" onclick="sendKeys('n\\n')">Deny</button>
+  <button onclick="sendKeys('Enter')">Enter</button>
+  <button onclick="sendKeys('C-c')">Ctrl+C</button>
+  <span class="status" id="status">Connecting...</span>
+</div>
+<div id="terminal">Loading...</div>
+<div class="input-bar">
+  <input id="keys-input" placeholder="Type keys to send..." autocapitalize="off" autocorrect="off" spellcheck="false">
+  <button onclick="sendInput()">Send</button>
+</div>
+<script>
+const paneId = '{{PANE_ID}}';
+let pollInterval = null;
+let lastContent = '';
+
+async function capture() {
+  try {
+    const url = '/api/tmux/' + encodeURIComponent(paneId) + '/capture';
+    const res = await fetch(url);
+    if (res.ok) {
+      const text = await res.text();
+      if (text !== lastContent) {
+        lastContent = text;
+        const el = document.getElementById('terminal');
+        el.textContent = text;
+        el.scrollTop = el.scrollHeight;
+      }
+      document.getElementById('status').textContent = 'Connected';
+    } else {
+      document.getElementById('status').textContent = 'Error: ' + res.status;
+    }
+  } catch (e) {
+    document.getElementById('status').textContent = 'Disconnected';
+  }
+}
+
+async function sendKeys(keys) {
+  try {
+    await fetch('/api/tmux/' + encodeURIComponent(paneId) + '/send', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ keys: keys })
+    });
+    setTimeout(capture, 100);
+  } catch (e) {
+    console.error('sendKeys failed:', e);
+  }
+}
+
+function sendInput() {
+  const input = document.getElementById('keys-input');
+  if (input.value) {
+    sendKeys(input.value);
+    input.value = '';
+  }
+  input.focus();
+}
+
+document.getElementById('keys-input').addEventListener('keydown', function(e) {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    sendInput();
+  }
+});
+
+capture();
+pollInterval = setInterval(capture, 500);
+</script>
+</body>
+</html>`;
+
+// ---------------------------------------------------------------------------
+// ttyd process management
+// ---------------------------------------------------------------------------
+
+// Map of paneId -> { process, port } for ttyd instances
+const ttydProcesses = new Map();
+let nextTtydPort = 7700;
+
+function startTtyd(ttydPath, paneId) {
+  if (ttydProcesses.has(paneId)) {
+    return ttydProcesses.get(paneId).port;
+  }
+
+  const port = nextTtydPort++;
+  const child = spawn(ttydPath, [
+    "-p", String(port),
+    "-o",               // once: exit after client disconnects
+    "-t", "fontSize=14",
+    "-t", "theme={'background':'#0d0d1a'}",
+    "tmux", "attach", "-t", paneId,
+  ], {
+    stdio: "ignore",
+    detached: true,
+  });
+
+  child.unref();
+
+  child.on("exit", () => {
+    ttydProcesses.delete(paneId);
+    log("ttyd", `ttyd for ${paneId} exited`);
+  });
+
+  ttydProcesses.set(paneId, { process: child, port });
+  log("ttyd", `Started ttyd for ${paneId} on port ${port}`);
+  return port;
+}
+
+function stopAllTtyd() {
+  for (const [paneId, entry] of ttydProcesses) {
+    try {
+      entry.process.kill();
+    } catch {
+      // ignore
+    }
+    ttydProcesses.delete(paneId);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Event poller
+// ---------------------------------------------------------------------------
+
+function startEventPoller(config) {
+  const logDir = path.join(config.eoccDir, "logs");
+  const eventsPath = path.join(logDir, "events.jsonl");
+  const processingPath = path.join(logDir, "events.processing.server.jsonl");
+  const settingsPath = path.join(config.eoccDir, "notification_settings.toml");
+  const stateFile = path.join(config.eoccDir, "hook_state.json");
+
+  let settings = lib.parseNotificationSettings(settingsPath);
+  let settingsMtime = fileMtime(settingsPath);
+
+  // In-memory session state for the /api/sessions endpoint
+  const sessions = {};
+
+  log("poller", `Watching ${eventsPath}`);
+  log("poller", `${settings ? settings.channels.length : 0} notification channel(s), enabled=${settings ? settings.enabled : false}`);
+
+  const interval = setInterval(() => {
+    // Hot-reload settings
+    const newMtime = fileMtime(settingsPath);
+    if (newMtime !== settingsMtime) {
+      settingsMtime = newMtime;
+      settings = lib.parseNotificationSettings(settingsPath);
+      log("poller", `Settings reloaded: ${settings ? settings.channels.length : 0} channel(s), enabled=${settings ? settings.enabled : false}`);
+    }
+
+    // Read events
+    const events = readEventsQueue(eventsPath, processingPath);
+    if (events.length === 0) return;
+
+    log("poller", `${events.length} event(s)`);
+
+    // Capture old statuses
+    const oldStatuses = {};
+    for (const [key, s] of Object.entries(sessions)) {
+      oldStatuses[key] = s.status;
+    }
+
+    // Apply events to in-memory session state
+    for (const event of events) {
+      const key = event.project_dir || event.project_name;
+      const status = lib.mapEventToStatus(event.event, event.notification_type);
+
+      if (status === null) {
+        delete sessions[key];
+        continue;
+      }
+      if (status === undefined) continue;
+
+      sessions[key] = {
+        project_name: event.project_name,
+        project_dir: event.project_dir,
+        status,
+        last_event: event.event,
+        waiting_for: event.message || event.tool_name || "",
+        tmux_pane: event.tmux_pane || (sessions[key] && sessions[key].tmux_pane) || "",
+        session_id: event.session_id,
+        updated_at: event.timestamp,
+      };
+    }
+
+    // Dispatch notifications
+    if (!settings || !settings.enabled) return;
+    if (!settings.channels || settings.channels.length === 0) return;
+
+    const hookState = lib.loadHookState(stateFile);
+    let stateChanged = false;
+
+    for (const [key, session] of Object.entries(sessions)) {
+      const oldStatus = oldStatuses[key] || null;
+      const newStatus = session.status;
+
+      if (oldStatus === newStatus) continue;
+
+      // Update hook state
+      const prev = hookState.sessions[key];
+      hookState.sessions[key] = {
+        status: newStatus,
+        last_notified: prev ? prev.last_notified : null,
+      };
+      stateChanged = true;
+
+      const { enabled, notifyOn } = lib.resolveForProject(settings, session.project_dir);
+      if (!enabled || !notifyOn.includes(newStatus)) continue;
+
+      if (settings.cooldown_seconds && prev && prev.last_notified) {
+        const elapsed = (Date.now() - prev.last_notified) / 1000;
+        if (elapsed < settings.cooldown_seconds) continue;
+      }
+
+      const transport = {
+        type: "local",
+        host: "",
+        port: "22",
+        user: "",
+        tmux_session: "",
+        tmux_pane: session.tmux_pane,
+        viewer_url: `http://localhost:${config.port}`,
+      };
+
+      const notification = lib.buildNotification(
+        settings,
+        session.project_name,
+        session.project_dir,
+        newStatus,
+        session.waiting_for,
+        transport
+      );
+
+      lib.dispatchToChannels(settings, notification).then((results) => {
+        const ok = results.filter((r) => r.ok).length;
+        const fail = results.length - ok;
+        log("notify", `${session.project_name}: ${oldStatus || "new"} -> ${newStatus} (${ok} ok, ${fail} fail)`);
+      });
+
+      hookState.sessions[key].last_notified = Date.now();
+    }
+
+    if (stateChanged) {
+      lib.saveHookState(stateFile, hookState);
+    }
+  }, 1000);
+
+  return { interval, sessions };
+}
+
+function fileMtime(filePath) {
+  try {
+    return fs.statSync(filePath).mtimeMs;
+  } catch {
+    return null;
+  }
+}
+
+function readEventsQueue(eventsPath, processingPath) {
+  if (!fs.existsSync(eventsPath)) return [];
+
+  try {
+    fs.renameSync(eventsPath, processingPath);
+  } catch {
+    return [];
+  }
+
+  let content;
+  try {
+    content = fs.readFileSync(processingPath, "utf8");
+  } catch {
+    return [];
+  }
+
+  try {
+    fs.unlinkSync(processingPath);
+  } catch {
+    // ignore
+  }
+
+  return content
+    .split("\n")
+    .filter((line) => line.trim())
+    .map((line) => {
+      try {
+        return JSON.parse(line);
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean);
+}
+
+// ---------------------------------------------------------------------------
+// HTTP server
+// ---------------------------------------------------------------------------
+
+function startHttpServer(config, sessions) {
+  const ttydPath = findTtyd();
+  if (ttydPath) {
+    log("http", `ttyd found at ${ttydPath} — full terminal viewer available`);
+  } else {
+    log("http", "ttyd not found — using capture-pane fallback viewer");
+  }
+
+  const server = http.createServer((req, res) => {
+    const parsedUrl = new URL(req.url, `http://${req.headers.host}`);
+    const pathname = parsedUrl.pathname;
+
+    // GET /tmux/:paneId — web viewer (ttyd redirect or fallback HTML)
+    const tmuxViewerMatch = pathname.match(/^\/tmux\/(.+)$/);
+    if (req.method === "GET" && tmuxViewerMatch) {
+      const paneId = decodeURIComponent(tmuxViewerMatch[1]);
+      if (!validatePaneId(paneId)) {
+        res.writeHead(400, { "Content-Type": "text/plain" });
+        res.end("Invalid pane ID");
+        return;
+      }
+
+      if (ttydPath) {
+        const ttydPort = startTtyd(ttydPath, paneId);
+        // Small delay to let ttyd bind, then redirect
+        setTimeout(() => {
+          const ttydHost = req.headers.host.split(":")[0];
+          res.writeHead(302, { Location: `http://${ttydHost}:${ttydPort}/` });
+          res.end();
+        }, 300);
+      } else {
+        const html = VIEWER_HTML.replace(/\{\{PANE_ID\}\}/g, htmlEscape(paneId));
+        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        res.end(html);
+      }
+      log("http", `GET /tmux/${paneId} -> ${ttydPath ? "ttyd" : "fallback"}`);
+      return;
+    }
+
+    // GET /api/tmux/:paneId/capture — capture pane content
+    const captureMatch = pathname.match(/^\/api\/tmux\/(.+)\/capture$/);
+    if (req.method === "GET" && captureMatch) {
+      const paneId = decodeURIComponent(captureMatch[1]);
+      if (!validatePaneId(paneId)) {
+        jsonResponse(res, 400, { error: "Invalid pane ID" });
+        return;
+      }
+      try {
+        const content = tmuxCapture(paneId);
+        res.writeHead(200, {
+          "Content-Type": "text/plain; charset=utf-8",
+          "Access-Control-Allow-Origin": "*",
+        });
+        res.end(content);
+      } catch (e) {
+        jsonResponse(res, 500, { error: e.message });
+      }
+      return;
+    }
+
+    // POST /api/tmux/:paneId/send — send keys to pane
+    const sendMatch = pathname.match(/^\/api\/tmux\/(.+)\/send$/);
+    if (req.method === "POST" && sendMatch) {
+      const paneId = decodeURIComponent(sendMatch[1]);
+      if (!validatePaneId(paneId)) {
+        jsonResponse(res, 400, { error: "Invalid pane ID" });
+        return;
+      }
+      let body = "";
+      req.on("data", (chunk) => (body += chunk));
+      req.on("end", () => {
+        try {
+          const { keys } = JSON.parse(body);
+          if (!keys) {
+            jsonResponse(res, 400, { error: "Missing keys field" });
+            return;
+          }
+          tmuxSendKeys(paneId, keys);
+          jsonResponse(res, 200, { ok: true });
+          log("http", `POST /api/tmux/${paneId}/send keys=${JSON.stringify(keys)}`);
+        } catch (e) {
+          jsonResponse(res, 500, { error: e.message });
+        }
+      });
+      return;
+    }
+
+    // GET /api/sessions — current session state
+    if (req.method === "GET" && pathname === "/api/sessions") {
+      jsonResponse(res, 200, sessions);
+      return;
+    }
+
+    // GET / — health check
+    if (req.method === "GET" && pathname === "/") {
+      res.writeHead(200, { "Content-Type": "text/plain" });
+      res.end("eocc-server\n");
+      return;
+    }
+
+    res.writeHead(404, { "Content-Type": "text/plain" });
+    res.end("Not Found\n");
+  });
+
+  server.listen(config.port, config.host, () => {
+    log("http", `Listening on ${config.host}:${config.port}`);
+  });
+
+  return server;
+}
+
+function jsonResponse(res, status, data) {
+  res.writeHead(status, { "Content-Type": "application/json" });
+  res.end(JSON.stringify(data));
+}
+
+function htmlEscape(s) {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#x27;");
+}
+
+// ---------------------------------------------------------------------------
+// Main
+// ---------------------------------------------------------------------------
+
+function main() {
+  const config = parseArgs();
+
+  // Ensure directories exist
+  fs.mkdirSync(path.join(config.eoccDir, "logs"), { recursive: true });
+
+  const { sessions } = startEventPoller(config);
+  startHttpServer(config, sessions);
+
+  // Graceful shutdown
+  function shutdown() {
+    log("server", "Shutting down...");
+    stopAllTtyd();
+    process.exit(0);
+  }
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
+
+  log("server", "eocc-server started");
+}
+
+main();
