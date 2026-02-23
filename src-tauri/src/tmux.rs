@@ -316,9 +316,9 @@ pub fn send_keys_with_transport(
     transport: &Transport,
 ) -> Result<(), String> {
     validate_pane_id(pane_id)?;
-    log::info!(target: "eocc.tmux", "send_keys: pane_id={}, keys={}, transport={:?}", pane_id, keys, transport);
+    log::debug!(target: "eocc.tmux", "send_keys: pane_id={}, transport={:?}", pane_id, transport);
     let result = run_tmux_with_transport(transport, &["send-keys", "-t", pane_id, keys]);
-    log::info!(target: "eocc.tmux", "send_keys result: {:?}", result);
+    log::debug!(target: "eocc.tmux", "send_keys result: {:?}", result);
     result?;
     Ok(())
 }
