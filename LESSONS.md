@@ -51,3 +51,53 @@ The notification system now has two independent dispatch paths:
 2. **Hook path** (eocc-hook): Direct dispatch to HTTP channels (ntfy, webhook, pushover). Works anywhere Claude Code runs.
 
 Both paths read the same `notification_settings.toml` and apply the same rules. They can run simultaneously without conflict — the desktop app handles the dashboard/UI while the hook ensures notifications reach external services regardless of the EOCC app's availability.
+
+## Notification deduplication: runtime coordination vs. static ownership
+
+**Problem:** With dual notification paths (hook + desktop app), both dispatch to the same HTTP channels, causing duplicate notifications when the desktop app is running.
+
+**Implemented solution (runtime coordination):** The hook writes a `notification_result` event to `events.jsonl` after dispatch, containing per-channel `{channel, ok, error}` results. The desktop app reads these results, stores them in `hook_notified_channels` on `AppState`, and filters sinks at dispatch time — skipping channels where the hook already succeeded.
+
+This required:
+- A new `NotificationResult` event type and `HookChannelResult` struct across both JS and Rust
+- A `notification_results` field on every `EventInfo` (defaulting to empty)
+- A `hook_notified_channels` HashMap on both `AppState` structs (eocc-core and main app)
+- Clearing logic in 4 places: `SessionStart`, `SessionEnd`, `upsert_session` (on status change), and the result event itself
+- A `dispatch_to_sinks` function that accepts a filtered subset of sinks
+- Pipeline changes to capture hook results while holding the state lock, then pass them to dispatch
+
+**Race condition:** There is a window between when the desktop reads the status-change event and when the `notification_result` event arrives. During this window the desktop may dispatch a duplicate. This is acceptable (at most one extra notification per transition) but not eliminable with the two-event approach.
+
+**Better approach — static channel ownership:** Instead of runtime coordination, partition channels at configuration time:
+
+```toml
+[[channels]]
+type = "ntfy"
+owner = "hook"    # hook dispatches, desktop skips
+
+[[channels]]
+type = "desktop"
+owner = "app"     # desktop dispatches, hook skips (can't anyway — no display server)
+```
+
+The hook ignores `owner = "app"` channels; the desktop ignores `owner = "hook"` channels. This eliminates:
+- The `notification_result` event type entirely
+- The `notification_results` field on `EventInfo`
+- The `hook_notified_channels` map and all clearing logic
+- The sink filtering in the pipeline
+- The race condition (no coordination needed)
+
+The ownership model works because the two paths have a natural partition: the hook handles HTTP-based channels (ntfy, webhook, pushover) that work on headless machines, and the desktop handles native OS notifications (sound, badge, desktop notification) that require a display server. There is almost no legitimate case where both should dispatch to the same HTTP endpoint.
+
+**Even better — atomic single-event write:** If runtime coordination is needed, embed the results in the original event instead of writing a second line. The hook would buffer the event, dispatch notifications, then write one line with everything:
+
+```js
+const results = await lib.dispatchToChannels(settings, notification);
+appendLine(logFile, JSON.stringify({ ...eventPayload, notification_results: results }));
+```
+
+This eliminates the race condition entirely — the desktop sees the status change and dispatch results atomically. The tradeoff is the desktop sees events ~1-5s later (HTTP round-trip time), but the hook already handled the urgent channels.
+
+**Separate coordination file:** An alternative to multiplexing into `events.jsonl` is a dedicated `~/.eocc/notification_state.json` (similar to `hook_state.json`) that the desktop reads before dispatching. This keeps `events.jsonl` as a pure session-state stream without notification metadata polluting every `EventInfo`. The desktop checks the file synchronously — no new event types, no extra struct fields.
+
+**Takeaway:** When two processes need to avoid duplicating work, prefer static partitioning (configuration-time decision) over runtime coordination (protocol between processes). Runtime coordination adds types, state, clearing logic, and race windows. Static partitioning adds one config field and a filter in each process's startup path.
