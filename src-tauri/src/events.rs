@@ -22,6 +22,7 @@ pub fn process_event(state: &mut AppState, event: EventInfo) {
         EventType::SessionStart => {
             state.cached_paths.update_from_event(&event);
             set_cached_tmux_path(&event.tmux_path);
+            state.hook_notified_channels.remove(&key);
             let transport = event.to_transport();
             state.sessions.insert(
                 key,
@@ -38,6 +39,7 @@ pub fn process_event(state: &mut AppState, event: EventInfo) {
         }
         EventType::SessionEnd => {
             state.sessions.remove(&key);
+            state.hook_notified_channels.remove(&key);
         }
         EventType::Notification => {
             let new_status = match event.notification_type {
@@ -65,6 +67,13 @@ pub fn process_event(state: &mut AppState, event: EventInfo) {
         EventType::UserPromptSubmit => {
             // User submitted a prompt - Claude is now actively working
             state.upsert_session(key, &event, SessionStatus::Active, String::new());
+        }
+        EventType::NotificationResult => {
+            if !event.notification_results.is_empty() {
+                state
+                    .hook_notified_channels
+                    .insert(key, event.notification_results);
+            }
         }
         EventType::Unknown => {
             if let Some(session) = state.sessions.get_mut(&key) {

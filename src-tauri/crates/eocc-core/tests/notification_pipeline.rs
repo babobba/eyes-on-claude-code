@@ -30,6 +30,7 @@ fn make_event(
         transport_host: String::new(),
         transport_port: String::new(),
         transport_user: String::new(),
+        notification_results: Vec::new(),
     }
 }
 
@@ -57,6 +58,7 @@ fn make_notification_event(
         transport_host: String::new(),
         transport_port: String::new(),
         transport_user: String::new(),
+        notification_results: Vec::new(),
     }
 }
 

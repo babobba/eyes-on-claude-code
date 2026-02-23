@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use eocc_core::notifications::{self, NotificationSink};
+use eocc_core::state::HookChannelResult;
 
 use crate::state::{AppState, EventInfo, SessionStatus};
 
@@ -11,6 +12,8 @@ use crate::state::{AppState, EventInfo, SessionStatus};
 pub struct PipelineResult {
     pub pending_notifications: Vec<notifications::SessionNotification>,
     pub cooldown_seconds: Option<u64>,
+    /// Hook notification results per session key, captured while holding the state lock.
+    pub hook_notified: HashMap<String, Vec<HookChannelResult>>,
 }
 
 /// Detect notification-worthy status transitions after events have been applied.
@@ -39,6 +42,7 @@ pub fn detect_pending_notifications(
     PipelineResult {
         pending_notifications: pending,
         cooldown_seconds: state.notification_settings.cooldown_seconds,
+        hook_notified: state.hook_notified_channels.clone(),
     }
 }
 
@@ -52,7 +56,8 @@ pub fn capture_old_statuses(state: &AppState) -> HashMap<String, SessionStatus> 
         .collect()
 }
 
-/// Dispatch pending notifications, respecting cooldown.
+/// Dispatch pending notifications, respecting cooldown and skipping channels
+/// that the hook already handled successfully.
 /// This performs blocking HTTP calls and should be called outside of any locks.
 pub fn dispatch_notifications(
     pipeline: &PipelineResult,
@@ -79,7 +84,25 @@ pub fn dispatch_notifications(
                 }
             }
         }
-        let record = notifications::dispatch(&sinks, notification);
+
+        let hook_results = pipeline.hook_notified.get(&notification.session_id);
+
+        let filtered_sinks: Vec<&Box<dyn NotificationSink>> = sinks
+            .iter()
+            .filter(|sink| {
+                let Some(results) = hook_results else {
+                    return true;
+                };
+                !results.iter().any(|r| r.ok && r.channel == sink.name())
+            })
+            .collect();
+
+        if filtered_sinks.is_empty() {
+            last_notified.insert(notification.session_id.clone(), Instant::now());
+            continue;
+        }
+
+        let record = notifications::dispatch_to_sinks(&filtered_sinks, notification);
         last_notified.insert(notification.session_id.clone(), Instant::now());
         if let Ok(mut history) = notification_history.lock() {
             history.push(record);

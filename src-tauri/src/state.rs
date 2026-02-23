@@ -5,8 +5,8 @@ use std::sync::{Arc, Mutex};
 // Re-export all shared types from eocc-core so the rest of the crate
 // can continue to `use crate::state::SessionInfo` etc. without changes.
 pub use eocc_core::state::{
-    CachedPaths, DashboardData, EventInfo, EventType, NotificationType, SessionInfo,
-    SessionStatus, Settings, Transport,
+    CachedPaths, DashboardData, EventInfo, EventType, HookChannelResult, NotificationType,
+    SessionInfo, SessionStatus, Settings, Transport,
 };
 
 #[derive(Default)]
@@ -16,6 +16,9 @@ pub struct AppState {
     pub settings: Settings,
     pub cached_paths: CachedPaths,
     pub notification_settings: NotificationSettings,
+    /// Tracks which notification channels the hook already dispatched successfully
+    /// per session key. Cleared when the session transitions to a new status.
+    pub hook_notified_channels: HashMap<String, Vec<HookChannelResult>>,
 }
 
 impl AppState {
@@ -68,6 +71,10 @@ impl AppState {
         waiting_for: String,
     ) {
         let transport = event.to_transport();
+        let old_status = self.sessions.get(&key).map(|s| s.status.clone());
+        if old_status.as_ref() != Some(&status) {
+            self.hook_notified_channels.remove(&key);
+        }
         self.sessions
             .entry(key)
             .and_modify(|s| {

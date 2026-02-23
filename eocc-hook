@@ -254,7 +254,27 @@ async function tryDispatchNotification(home, eventType, notificationType, projec
     }
 
     const notification = lib.buildNotification(settings, projectName, projectDir, newStatus, waitingInfo, transport);
-    await lib.dispatchToChannels(settings, notification);
+    const channelResults = await lib.dispatchToChannels(settings, notification);
+
+    // Write notification results so the desktop app can skip already-handled channels
+    const logDir = path.join(home, ".eocc", "logs");
+    const logFile = path.join(logDir, "events.jsonl");
+    const resultPayload = {
+      timestamp: new Date().toISOString(),
+      event: "notification_result",
+      matcher: "",
+      project_name: projectName,
+      project_dir: projectDir,
+      session_id: "",
+      message: "",
+      notification_type: "",
+      tool_name: "",
+      tmux_pane: "",
+      npx_path: "",
+      tmux_path: "",
+      notification_results: channelResults,
+    };
+    appendLine(logFile, JSON.stringify(resultPayload));
 
     hookState.sessions[sessionKey].last_notified = Date.now();
     lib.saveHookState(stateFile, hookState);

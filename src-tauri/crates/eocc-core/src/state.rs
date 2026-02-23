@@ -42,6 +42,7 @@ pub enum EventType {
     SessionStart,
     SessionEnd,
     Notification,
+    NotificationResult,
     Stop,
     PostToolUse,
     UserPromptSubmit,
@@ -55,6 +56,7 @@ impl EventType {
             EventType::SessionStart => "session_start",
             EventType::SessionEnd => "session_end",
             EventType::Notification => "notification",
+            EventType::NotificationResult => "notification_result",
             EventType::Stop => "stop",
             EventType::PostToolUse => "post_tool_use",
             EventType::UserPromptSubmit => "user_prompt_submit",
@@ -71,6 +73,14 @@ pub enum NotificationType {
     #[serde(other)]
     #[default]
     Other,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HookChannelResult {
+    pub channel: String,
+    pub ok: bool,
+    #[serde(default)]
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -101,6 +111,8 @@ pub struct EventInfo {
     pub transport_port: String,
     #[serde(default)]
     pub transport_user: String,
+    #[serde(default)]
+    pub notification_results: Vec<HookChannelResult>,
 }
 
 impl EventInfo {
@@ -111,6 +123,7 @@ impl EventInfo {
                 NotificationType::IdlePrompt => "⏳",
                 NotificationType::Other => "🔔",
             },
+            EventType::NotificationResult => "📨",
             EventType::Stop => "✅",
             EventType::SessionStart => "🚀",
             EventType::SessionEnd => "🏁",
@@ -270,6 +283,9 @@ pub struct AppState {
     pub recent_events: VecDeque<EventInfo>,
     pub settings: Settings,
     pub cached_paths: CachedPaths,
+    /// Tracks which notification channels the hook already dispatched successfully
+    /// per session key. Cleared when the session transitions to a new status.
+    pub hook_notified_channels: HashMap<String, Vec<HookChannelResult>>,
 }
 
 impl AppState {
@@ -308,6 +324,10 @@ impl AppState {
         waiting_for: String,
     ) {
         let transport = event.to_transport();
+        let old_status = self.sessions.get(&key).map(|s| s.status.clone());
+        if old_status.as_ref() != Some(&status) {
+            self.hook_notified_channels.remove(&key);
+        }
         self.sessions
             .entry(key)
             .and_modify(|s| {
@@ -355,6 +375,7 @@ mod tests {
             transport_host: String::new(),
             transport_port: String::new(),
             transport_user: String::new(),
+            notification_results: Vec::new(),
         }
     }
 
@@ -478,6 +499,10 @@ mod tests {
             serde_json::from_str::<EventType>(r#""user_prompt_submit""#).unwrap(),
             EventType::UserPromptSubmit
         );
+        assert_eq!(
+            serde_json::from_str::<EventType>(r#""notification_result""#).unwrap(),
+            EventType::NotificationResult
+        );
     }
 
     #[test]
@@ -497,6 +522,10 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&EventType::PostToolUse).unwrap(),
             r#""post_tool_use""#
+        );
+        assert_eq!(
+            serde_json::to_string(&EventType::NotificationResult).unwrap(),
+            r#""notification_result""#
         );
     }
 
@@ -860,5 +889,61 @@ mod tests {
         assert!(event.tmux_pane.is_empty());
         assert!(event.npx_path.is_empty());
         assert!(event.tmux_path.is_empty());
+    }
+
+    // -- HookChannelResult --
+
+    #[test]
+    fn hook_channel_result_deserializes() {
+        let json = r#"{"channel": "ntfy", "ok": true, "error": null}"#;
+        let result: HookChannelResult = serde_json::from_str(json).unwrap();
+        assert_eq!(result.channel, "ntfy");
+        assert!(result.ok);
+        assert!(result.error.is_none());
+    }
+
+    #[test]
+    fn hook_channel_result_with_error() {
+        let json = r#"{"channel": "webhook", "ok": false, "error": "timeout"}"#;
+        let result: HookChannelResult = serde_json::from_str(json).unwrap();
+        assert!(!result.ok);
+        assert_eq!(result.error.as_deref(), Some("timeout"));
+    }
+
+    #[test]
+    fn event_info_notification_results_defaults_empty() {
+        let json = r#"{
+            "timestamp": "2025-01-01T00:00:00Z",
+            "event": "notification",
+            "matcher": "",
+            "project_name": "proj",
+            "project_dir": "/proj",
+            "session_id": "s1",
+            "message": ""
+        }"#;
+        let event: EventInfo = serde_json::from_str(json).unwrap();
+        assert!(event.notification_results.is_empty());
+    }
+
+    #[test]
+    fn event_info_notification_result_parses_results() {
+        let json = r#"{
+            "timestamp": "2025-01-01T00:00:00Z",
+            "event": "notification_result",
+            "matcher": "",
+            "project_name": "proj",
+            "project_dir": "/proj",
+            "session_id": "",
+            "message": "",
+            "notification_results": [
+                {"channel": "ntfy", "ok": true, "error": null},
+                {"channel": "webhook", "ok": false, "error": "timeout"}
+            ]
+        }"#;
+        let event: EventInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(event.event_type, EventType::NotificationResult);
+        assert_eq!(event.notification_results.len(), 2);
+        assert!(event.notification_results[0].ok);
+        assert!(!event.notification_results[1].ok);
     }
 }

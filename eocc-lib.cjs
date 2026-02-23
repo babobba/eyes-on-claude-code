@@ -394,25 +394,35 @@ function sendPushover(channel, notification) {
 }
 
 async function dispatchToChannels(settings, notification) {
-  const promises = [];
+  const entries = [];
   for (const channel of settings.channels || []) {
     try {
       switch (channel.type) {
         case "ntfy":
-          promises.push(sendNtfy(channel, notification));
+          entries.push({ type: "ntfy", promise: sendNtfy(channel, notification) });
           break;
         case "webhook":
-          promises.push(sendWebhookChannel(channel, notification));
+          entries.push({ type: "webhook", promise: sendWebhookChannel(channel, notification) });
           break;
         case "pushover":
-          promises.push(sendPushover(channel, notification));
+          entries.push({ type: "pushover", promise: sendPushover(channel, notification) });
           break;
       }
     } catch {
       // Best effort, continue to next channel
     }
   }
-  return Promise.all(promises);
+  const settled = await Promise.all(
+    entries.map(async (e) => {
+      try {
+        const result = await e.promise;
+        return { channel: e.type, ok: !!result.ok, error: result.error || null };
+      } catch (err) {
+        return { channel: e.type, ok: false, error: err.message || "dispatch_error" };
+      }
+    }),
+  );
+  return settled;
 }
 
 // ---------------------------------------------------------------------------
