@@ -12,7 +12,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const os = require("node:os");
-const { execSync } = require("node:child_process");
+const { execSync, execFileSync } = require("node:child_process");
 const lib = require("./eocc-lib.cjs");
 
 function isoTimestampUtc() {
@@ -44,7 +44,7 @@ function getString(obj, key, fallback = "") {
 
 function whichCommand(cmd) {
   try {
-    return execSync(`which ${cmd}`, { encoding: "utf8", timeout: 5000 }).trim();
+    return execFileSync("which", [cmd], { encoding: "utf8", timeout: 5000 }).trim();
   } catch {
     return "";
   }
@@ -54,8 +54,9 @@ function whichCommand(cmd) {
 function resolveTmuxSession(paneId) {
   if (!/^%\d+$/.test(paneId)) return "";
   try {
-    return execSync(
-      `tmux display-message -p -t ${paneId} "#{session_name}"`,
+    return execFileSync(
+      "tmux",
+      ["display-message", "-p", "-t", paneId, "#{session_name}"],
       { encoding: "utf8", timeout: 3000 }
     ).trim();
   } catch {
