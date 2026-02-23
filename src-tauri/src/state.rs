@@ -48,6 +48,17 @@ impl AppState {
         }
     }
 
+    /// Look up the transport for a session by project directory.
+    /// Returns `Transport::Local` if the session is not found.
+    pub fn get_transport(&self, project_dir: Option<&str>) -> Transport {
+        if let Some(dir) = project_dir {
+            if let Some(session) = self.sessions.get(dir) {
+                return session.transport.clone();
+            }
+        }
+        Transport::Local {}
+    }
+
     /// Insert or update a session with the given status and waiting_for info
     pub fn upsert_session(
         &mut self,

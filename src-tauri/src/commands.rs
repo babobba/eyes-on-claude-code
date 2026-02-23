@@ -301,19 +301,15 @@ pub fn open_claude_settings() -> Result<(), String> {
 // Tmux commands
 // ============================================================================
 
-/// Look up the transport for a session by project_dir.
 fn get_transport_for_session(
     state: &tauri::State<'_, ManagedState>,
     project_dir: Option<&str>,
 ) -> Transport {
-    if let Some(dir) = project_dir {
-        if let Ok(state_guard) = state.0.lock() {
-            if let Some(session) = state_guard.sessions.get(dir) {
-                return session.transport.clone();
-            }
-        }
-    }
-    Transport::Local {}
+    state
+        .0
+        .lock()
+        .map(|s| s.get_transport(project_dir))
+        .unwrap_or(Transport::Local {})
 }
 
 #[tauri::command]

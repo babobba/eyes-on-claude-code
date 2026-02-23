@@ -135,14 +135,10 @@ fn extract_pane_id(path: &str, prefix: &str, suffix: &str) -> Option<String> {
 }
 
 fn get_transport_for_session(state: &Arc<Mutex<AppState>>, project_dir: Option<&str>) -> Transport {
-    if let Some(dir) = project_dir {
-        if let Ok(state_guard) = state.lock() {
-            if let Some(session) = state_guard.sessions.get(dir) {
-                return session.transport.clone();
-            }
-        }
-    }
-    Transport::Local {}
+    state
+        .lock()
+        .map(|s| s.get_transport(project_dir))
+        .unwrap_or(Transport::Local {})
 }
 
 fn json_response(request: tiny_http::Request, status: u16, body: &str) {
