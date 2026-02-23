@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 /**
- * eocc-server - Headless EOCC event poller, notification dispatcher, and tmux web viewer
+ * eocc-server - Headless EOCC session dashboard and tmux web viewer
  *
  * Usage: eocc-server [--port PORT] [--host HOST]
  *
- * Watches ~/.eocc/logs/events.jsonl for Claude Code session events, dispatches
- * notifications via configured channels (ntfy, webhook, pushover), and serves
- * a web-based tmux viewer for mobile access to Claude's permission prompts.
+ * Watches ~/.eocc/logs/events.jsonl for Claude Code session events, tracks
+ * session state, and serves a web dashboard with tmux viewer links.
+ * Notifications are handled by eocc-hook — this server is purely for
+ * web-based session monitoring and tmux interaction.
  *
  * If ttyd is installed, the viewer route launches ttyd for a full terminal
  * experience. Otherwise, falls back to a capture-pane polling viewer.
@@ -22,7 +23,29 @@ const path = require("node:path");
 const os = require("node:os");
 const http = require("node:http");
 const { execSync, spawn } = require("node:child_process");
-const lib = require("./eocc-lib.cjs");
+
+// ---------------------------------------------------------------------------
+// Status mapping (inline — avoids depending on eocc-lib.cjs)
+// ---------------------------------------------------------------------------
+
+function mapEventToStatus(eventType, notificationType) {
+  switch (eventType) {
+    case "session_start":
+    case "post_tool_use":
+    case "user_prompt_submit":
+      return "active";
+    case "session_end":
+      return null;
+    case "stop":
+      return "completed";
+    case "notification":
+      if (notificationType === "permission_prompt") return "waiting_permission";
+      if (notificationType === "idle_prompt") return "waiting_input";
+      return "active";
+    default:
+      return undefined;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -80,7 +103,6 @@ function tmuxCapture(paneId) {
 }
 
 function tmuxSendKeys(paneId, keys) {
-  // Escape single quotes in keys for shell safety
   const escaped = keys.replace(/'/g, "'\\''");
   execSync(`tmux send-keys -t ${paneId} '${escaped}'`, { timeout: 5000 });
 }
@@ -261,10 +283,121 @@ pollInterval = setInterval(capture, 500);
 </html>`;
 
 // ---------------------------------------------------------------------------
+// Dashboard HTML
+// ---------------------------------------------------------------------------
+
+const STATUS_EMOJI = {
+  active: "\u{1F7E2}",
+  waiting_permission: "\u{1F510}",
+  waiting_input: "\u{23F3}",
+  completed: "\u{2705}",
+};
+
+const STATUS_LABELS = {
+  active: "Active",
+  waiting_permission: "Waiting for permission",
+  waiting_input: "Waiting for input",
+  completed: "Completed",
+};
+
+function buildDashboardHtml(sessions) {
+  const entries = Object.values(sessions);
+  // Sort: waiting states first, then active, then completed
+  const order = { waiting_permission: 0, waiting_input: 1, active: 2, completed: 3 };
+  entries.sort((a, b) => (order[a.status] ?? 9) - (order[b.status] ?? 9));
+
+  let rows = "";
+  if (entries.length === 0) {
+    rows = `<tr><td colspan="4" style="text-align:center;color:#666;padding:32px">No active sessions</td></tr>`;
+  } else {
+    for (const s of entries) {
+      const emoji = STATUS_EMOJI[s.status] || "";
+      const label = STATUS_LABELS[s.status] || s.status;
+      const pane = s.tmux_pane ? htmlEscape(s.tmux_pane) : "";
+      const viewerLink = s.tmux_pane
+        ? `<a href="/tmux/${encodeURIComponent(s.tmux_pane)}" style="color:#6c5ce7">Open viewer</a>`
+        : `<span style="color:#555">no pane</span>`;
+      const age = s.updated_at ? relativeTime(s.updated_at) : "";
+      rows += `<tr>
+        <td>${emoji} ${htmlEscape(s.project_name)}</td>
+        <td>${label}</td>
+        <td>${viewerLink}${pane ? ` <span style="color:#555">(${pane})</span>` : ""}</td>
+        <td style="color:#666">${age}</td>
+      </tr>`;
+    }
+  }
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EOCC - Sessions</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #0d0d1a;
+    color: #e0e0e0;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-size: 14px;
+    padding: 20px;
+  }
+  h1 { font-size: 20px; font-weight: 600; margin-bottom: 16px; }
+  h1 span { color: #6c5ce7; }
+  table { width: 100%; border-collapse: collapse; }
+  th {
+    text-align: left;
+    padding: 8px 12px;
+    border-bottom: 1px solid #2a2a3e;
+    color: #888;
+    font-weight: 500;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  td {
+    padding: 10px 12px;
+    border-bottom: 1px solid #1a1a2e;
+  }
+  tr:hover td { background: #111122; }
+  a { text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .refresh { color: #555; font-size: 12px; margin-top: 12px; }
+</style>
+</head>
+<body>
+<h1><span>EOCC</span> Sessions</h1>
+<table>
+  <thead><tr><th>Project</th><th>Status</th><th>Viewer</th><th>Updated</th></tr></thead>
+  <tbody>${rows}</tbody>
+</table>
+<p class="refresh">Auto-refreshes every 3s</p>
+<script>setTimeout(()=>location.reload(),3000)</script>
+</body>
+</html>`;
+}
+
+function relativeTime(isoString) {
+  try {
+    const diff = Date.now() - new Date(isoString).getTime();
+    if (diff < 0) return "just now";
+    const secs = Math.floor(diff / 1000);
+    if (secs < 10) return "just now";
+    if (secs < 60) return secs + "s ago";
+    const mins = Math.floor(secs / 60);
+    if (mins < 60) return mins + "m ago";
+    const hours = Math.floor(mins / 60);
+    if (hours < 24) return hours + "h ago";
+    return Math.floor(hours / 24) + "d ago";
+  } catch {
+    return "";
+  }
+}
+
+// ---------------------------------------------------------------------------
 // ttyd process management
 // ---------------------------------------------------------------------------
 
-// Map of paneId -> { process, port } for ttyd instances
 const ttydProcesses = new Map();
 let nextTtydPort = 7700;
 
@@ -276,7 +409,7 @@ function startTtyd(ttydPath, paneId) {
   const port = nextTtydPort++;
   const child = spawn(ttydPath, [
     "-p", String(port),
-    "-o",               // once: exit after client disconnects
+    "-o",
     "-t", "fontSize=14",
     "-t", "theme={'background':'#0d0d1a'}",
     "tmux", "attach", "-t", paneId,
@@ -298,61 +431,38 @@ function startTtyd(ttydPath, paneId) {
 }
 
 function stopAllTtyd() {
-  for (const [paneId, entry] of ttydProcesses) {
+  for (const [, entry] of ttydProcesses) {
     try {
       entry.process.kill();
     } catch {
       // ignore
     }
-    ttydProcesses.delete(paneId);
   }
+  ttydProcesses.clear();
 }
 
 // ---------------------------------------------------------------------------
-// Event poller
+// Event poller (session state tracking only — no notification dispatch)
 // ---------------------------------------------------------------------------
 
 function startEventPoller(config) {
   const logDir = path.join(config.eoccDir, "logs");
   const eventsPath = path.join(logDir, "events.jsonl");
   const processingPath = path.join(logDir, "events.processing.server.jsonl");
-  const settingsPath = path.join(config.eoccDir, "notification_settings.toml");
-  const stateFile = path.join(config.eoccDir, "hook_state.json");
 
-  let settings = lib.parseNotificationSettings(settingsPath);
-  let settingsMtime = fileMtime(settingsPath);
-
-  // In-memory session state for the /api/sessions endpoint
   const sessions = {};
 
   log("poller", `Watching ${eventsPath}`);
-  log("poller", `${settings ? settings.channels.length : 0} notification channel(s), enabled=${settings ? settings.enabled : false}`);
 
   const interval = setInterval(() => {
-    // Hot-reload settings
-    const newMtime = fileMtime(settingsPath);
-    if (newMtime !== settingsMtime) {
-      settingsMtime = newMtime;
-      settings = lib.parseNotificationSettings(settingsPath);
-      log("poller", `Settings reloaded: ${settings ? settings.channels.length : 0} channel(s), enabled=${settings ? settings.enabled : false}`);
-    }
-
-    // Read events
     const events = readEventsQueue(eventsPath, processingPath);
     if (events.length === 0) return;
 
     log("poller", `${events.length} event(s)`);
 
-    // Capture old statuses
-    const oldStatuses = {};
-    for (const [key, s] of Object.entries(sessions)) {
-      oldStatuses[key] = s.status;
-    }
-
-    // Apply events to in-memory session state
     for (const event of events) {
       const key = event.project_dir || event.project_name;
-      const status = lib.mapEventToStatus(event.event, event.notification_type);
+      const status = mapEventToStatus(event.event, event.notification_type);
 
       if (status === null) {
         delete sessions[key];
@@ -371,78 +481,9 @@ function startEventPoller(config) {
         updated_at: event.timestamp,
       };
     }
-
-    // Dispatch notifications
-    if (!settings || !settings.enabled) return;
-    if (!settings.channels || settings.channels.length === 0) return;
-
-    const hookState = lib.loadHookState(stateFile);
-    let stateChanged = false;
-
-    for (const [key, session] of Object.entries(sessions)) {
-      const oldStatus = oldStatuses[key] || null;
-      const newStatus = session.status;
-
-      if (oldStatus === newStatus) continue;
-
-      // Update hook state
-      const prev = hookState.sessions[key];
-      hookState.sessions[key] = {
-        status: newStatus,
-        last_notified: prev ? prev.last_notified : null,
-      };
-      stateChanged = true;
-
-      const { enabled, notifyOn } = lib.resolveForProject(settings, session.project_dir);
-      if (!enabled || !notifyOn.includes(newStatus)) continue;
-
-      if (settings.cooldown_seconds && prev && prev.last_notified) {
-        const elapsed = (Date.now() - prev.last_notified) / 1000;
-        if (elapsed < settings.cooldown_seconds) continue;
-      }
-
-      const transport = {
-        type: "local",
-        host: "",
-        port: "22",
-        user: "",
-        tmux_session: "",
-        tmux_pane: session.tmux_pane,
-        viewer_url: `http://localhost:${config.port}`,
-      };
-
-      const notification = lib.buildNotification(
-        settings,
-        session.project_name,
-        session.project_dir,
-        newStatus,
-        session.waiting_for,
-        transport
-      );
-
-      lib.dispatchToChannels(settings, notification).then((results) => {
-        const ok = results.filter((r) => r.ok).length;
-        const fail = results.length - ok;
-        log("notify", `${session.project_name}: ${oldStatus || "new"} -> ${newStatus} (${ok} ok, ${fail} fail)`);
-      });
-
-      hookState.sessions[key].last_notified = Date.now();
-    }
-
-    if (stateChanged) {
-      lib.saveHookState(stateFile, hookState);
-    }
   }, 1000);
 
   return { interval, sessions };
-}
-
-function fileMtime(filePath) {
-  try {
-    return fs.statSync(filePath).mtimeMs;
-  } catch {
-    return null;
-  }
 }
 
 function readEventsQueue(eventsPath, processingPath) {
@@ -496,6 +537,14 @@ function startHttpServer(config, sessions) {
     const parsedUrl = new URL(req.url, `http://${req.headers.host}`);
     const pathname = parsedUrl.pathname;
 
+    // GET / — session dashboard
+    if (req.method === "GET" && pathname === "/") {
+      const html = buildDashboardHtml(sessions);
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      res.end(html);
+      return;
+    }
+
     // GET /tmux/:paneId — web viewer (ttyd redirect or fallback HTML)
     const tmuxViewerMatch = pathname.match(/^\/tmux\/(.+)$/);
     if (req.method === "GET" && tmuxViewerMatch) {
@@ -508,7 +557,6 @@ function startHttpServer(config, sessions) {
 
       if (ttydPath) {
         const ttydPort = startTtyd(ttydPath, paneId);
-        // Small delay to let ttyd bind, then redirect
         setTimeout(() => {
           const ttydHost = req.headers.host.split(":")[0];
           res.writeHead(302, { Location: `http://${ttydHost}:${ttydPort}/` });
@@ -571,16 +619,9 @@ function startHttpServer(config, sessions) {
       return;
     }
 
-    // GET /api/sessions — current session state
+    // GET /api/sessions — current session state (JSON)
     if (req.method === "GET" && pathname === "/api/sessions") {
       jsonResponse(res, 200, sessions);
-      return;
-    }
-
-    // GET / — health check
-    if (req.method === "GET" && pathname === "/") {
-      res.writeHead(200, { "Content-Type": "text/plain" });
-      res.end("eocc-server\n");
       return;
     }
 
@@ -616,13 +657,11 @@ function htmlEscape(s) {
 function main() {
   const config = parseArgs();
 
-  // Ensure directories exist
   fs.mkdirSync(path.join(config.eoccDir, "logs"), { recursive: true });
 
   const { sessions } = startEventPoller(config);
   startHttpServer(config, sessions);
 
-  // Graceful shutdown
   function shutdown() {
     log("server", "Shutting down...");
     stopAllTtyd();
