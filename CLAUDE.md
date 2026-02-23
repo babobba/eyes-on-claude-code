@@ -72,7 +72,11 @@ This is a **Tauri v2** app with a React + TypeScript frontend and a Rust backend
 │   ├── lint.yml            # CI: ESLint, Prettier, TypeScript, cargo fmt, clippy
 │   └── release.yml         # CI: Multi-platform build and GitHub release
 └── docs/
-    └── macos-notarization-setup.md
+    ├── macos-notarization-setup.md
+    ├── desktop-install.md   # Desktop app dependencies and installation
+    ├── server-install.md    # Headless server setup (hook + server scripts)
+    ├── configuration.md     # Configuration reference with examples
+    └── deployment.md        # Deployment guide (desktop, headless, hybrid, containers)
 ```
 
 ### Data flow
