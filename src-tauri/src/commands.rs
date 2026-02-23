@@ -2,7 +2,7 @@ use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
 use crate::constants::{MINI_VIEW_HEIGHT, MINI_VIEW_WIDTH, SETUP_MODAL_HEIGHT, SETUP_MODAL_WIDTH};
 use crate::git::{get_branches, get_git_info, GitInfo};
-use crate::persist::save_runtime_state;
+use crate::persist::{create_runtime_snapshot, save_runtime_snapshot};
 use crate::settings::{save_notification_settings, save_settings};
 use crate::setup::{self, SetupStatus};
 use crate::state::{
@@ -27,11 +27,14 @@ pub fn remove_session(
     state: tauri::State<'_, ManagedState>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    let mut state_guard = state.0.lock().map_err(|_| LOCK_ERROR)?;
-    state_guard.sessions.remove(&project_dir);
-    update_tray_and_badge(&app, &state_guard);
-    emit_state_update(&app, &state_guard);
-    save_runtime_state(&app, &state_guard);
+    let snapshot = {
+        let mut state_guard = state.0.lock().map_err(|_| LOCK_ERROR)?;
+        state_guard.sessions.remove(&project_dir);
+        update_tray_and_badge(&app, &state_guard);
+        emit_state_update(&app, &state_guard);
+        create_runtime_snapshot(&state_guard)
+    };
+    save_runtime_snapshot(&app, &snapshot);
     Ok(())
 }
 
@@ -40,11 +43,14 @@ pub fn clear_all_sessions(
     state: tauri::State<'_, ManagedState>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    let mut state_guard = state.0.lock().map_err(|_| LOCK_ERROR)?;
-    state_guard.sessions.clear();
-    update_tray_and_badge(&app, &state_guard);
-    emit_state_update(&app, &state_guard);
-    save_runtime_state(&app, &state_guard);
+    let snapshot = {
+        let mut state_guard = state.0.lock().map_err(|_| LOCK_ERROR)?;
+        state_guard.sessions.clear();
+        update_tray_and_badge(&app, &state_guard);
+        emit_state_update(&app, &state_guard);
+        create_runtime_snapshot(&state_guard)
+    };
+    save_runtime_snapshot(&app, &snapshot);
     Ok(())
 }
 

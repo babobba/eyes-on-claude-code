@@ -65,8 +65,3 @@ pub fn save_runtime_snapshot(app: &tauri::AppHandle, persisted: &PersistedRuntim
         log::error!(target: "eocc.persist", "Failed to write runtime state: {:?}", e);
     }
 }
-
-pub fn save_runtime_state(app: &tauri::AppHandle, state: &AppState) {
-    let persisted = create_runtime_snapshot(state);
-    save_runtime_snapshot(app, &persisted);
-}
