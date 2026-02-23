@@ -2,9 +2,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use crate::events::apply_events_to_state;
 use crate::persist::{create_runtime_snapshot, save_runtime_snapshot};
-use crate::state::{AppState, EventInfo, SessionStatus, Transport};
+use crate::state::{AppState, EventInfo, Transport};
 use crate::tmux;
 use crate::tray::{emit_state_update, update_tray_and_badge};
 use eocc_core::notifications::{self, NotificationSink};
@@ -208,73 +207,31 @@ fn handle_post_events(
         events.len()
     );
 
-    // Process events through the same pipeline as the file watcher
-    let (snapshot, pending_notifications, cooldown_secs) = {
+    // Process events through the shared notification pipeline
+    let (snapshot, pipeline) = {
         let Ok(mut state_guard) = state.lock() else {
             json_response(request, 500, r#"{"error":"State lock failed"}"#);
             return;
         };
 
-        // Capture old statuses
-        let old_statuses: HashMap<String, SessionStatus> = state_guard
-            .sessions
-            .iter()
-            .map(|(k, v)| (k.clone(), v.status.clone()))
-            .collect();
-
-        apply_events_to_state(&mut state_guard, &events);
+        let pipeline = crate::notification_pipeline::apply_and_detect(
+            &mut state_guard,
+            &events,
+            notification_sinks,
+        );
         update_tray_and_badge(app_handle, &state_guard);
         emit_state_update(app_handle, &state_guard);
 
-        // Detect status transitions for notifications
-        let sinks_active = state_guard.notification_settings.enabled
-            && notification_sinks
-                .lock()
-                .map(|s| !s.is_empty())
-                .unwrap_or(false);
-        let cooldown_secs = state_guard.notification_settings.cooldown_seconds;
-        let pending = if sinks_active {
-            notifications::detect_status_transitions(
-                &old_statuses,
-                &state_guard.sessions,
-                &state_guard.notification_settings,
-            )
-        } else {
-            Vec::new()
-        };
-
-        (
-            create_runtime_snapshot(&state_guard),
-            pending,
-            cooldown_secs,
-        )
+        (create_runtime_snapshot(&state_guard), pipeline)
     };
 
-    // I/O outside of lock
     save_runtime_snapshot(app_handle, &snapshot);
-
-    // Dispatch notifications
-    if !pending_notifications.is_empty() {
-        if let Ok(sinks) = notification_sinks.lock() {
-            let now = Instant::now();
-            for notification in &pending_notifications {
-                if let Some(cd) = cooldown_secs {
-                    if cd > 0 {
-                        if let Some(last) = last_notified.get(&notification.session_id) {
-                            if now.duration_since(*last).as_secs() < cd {
-                                continue;
-                            }
-                        }
-                    }
-                }
-                let record = notifications::dispatch(&sinks, notification);
-                last_notified.insert(notification.session_id.clone(), Instant::now());
-                if let Ok(mut history) = notification_history.lock() {
-                    history.push(record);
-                }
-            }
-        }
-    }
+    crate::notification_pipeline::dispatch_notifications(
+        &pipeline,
+        notification_sinks,
+        notification_history,
+        last_notified,
+    );
 
     let count = events.len();
     json_response(request, 200, &format!(r#"{{"processed":{}}}"#, count));

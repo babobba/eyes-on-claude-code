@@ -6,6 +6,7 @@ mod constants;
 mod events;
 mod git;
 mod menu;
+mod notification_pipeline;
 mod persist;
 mod settings;
 mod setup;
@@ -43,9 +44,7 @@ use persist::{create_runtime_snapshot, load_runtime_state, save_runtime_snapshot
 use settings::{
     get_app_log_dir, get_log_dir, load_notification_settings, load_settings, save_settings,
 };
-use state::{
-    AppState, ManagedState, NotificationHistoryState, NotificationSinksState, SessionStatus,
-};
+use state::{AppState, ManagedState, NotificationHistoryState, NotificationSinksState};
 use tray::{emit_state_update, update_tray_and_badge};
 
 fn show_dashboard(app: &tauri::AppHandle) {
@@ -94,7 +93,6 @@ fn start_file_watcher(
     notification_sinks: Arc<Mutex<Vec<Box<dyn NotificationSink>>>>,
     notification_history: Arc<Mutex<notifications::history::NotificationHistory>>,
 ) {
-    use std::time::Instant;
     let log_dir = match get_log_dir(&app_handle) {
         Ok(dir) => dir,
         Err(e) => {
@@ -104,8 +102,7 @@ fn start_file_watcher(
     };
 
     std::thread::spawn(move || {
-        // Track last notification time per session for cooldown
-        let mut last_notified: HashMap<String, Instant> = HashMap::new();
+        let mut last_notified = HashMap::new();
 
         if let Err(e) = fs::create_dir_all(&log_dir) {
             eprintln!("[eocc] Failed to create log directory: {:?}", e);
@@ -133,76 +130,30 @@ fn start_file_watcher(
                     let new_events = read_events_from_queue(&app_handle);
 
                     if !new_events.is_empty() {
-                        let (snapshot, pending_notifications, cooldown_secs) = {
+                        let (snapshot, pipeline) = {
                             let Ok(mut state_guard) = state.lock() else {
                                 eprintln!("[eocc] Failed to acquire state lock in watcher");
                                 continue;
                             };
 
-                            // Capture old statuses before applying events
-                            let old_statuses: HashMap<String, SessionStatus> = state_guard
-                                .sessions
-                                .iter()
-                                .map(|(k, v)| (k.clone(), v.status.clone()))
-                                .collect();
-
-                            apply_events_to_state(&mut state_guard, &new_events);
+                            let pipeline = notification_pipeline::apply_and_detect(
+                                &mut state_guard,
+                                &new_events,
+                                &notification_sinks,
+                            );
                             update_tray_and_badge(&app_handle, &state_guard);
                             emit_state_update(&app_handle, &state_guard);
 
-                            // Detect status transitions for notifications
-                            let sinks_active = state_guard.notification_settings.enabled
-                                && notification_sinks
-                                    .lock()
-                                    .map(|s| !s.is_empty())
-                                    .unwrap_or(false);
-                            let cooldown_secs = state_guard.notification_settings.cooldown_seconds;
-                            let pending = if sinks_active {
-                                notifications::detect_status_transitions(
-                                    &old_statuses,
-                                    &state_guard.sessions,
-                                    &state_guard.notification_settings,
-                                )
-                            } else {
-                                Vec::new()
-                            };
-
-                            (
-                                create_runtime_snapshot(&state_guard),
-                                pending,
-                                cooldown_secs,
-                            )
+                            (create_runtime_snapshot(&state_guard), pipeline)
                         };
 
-                        // I/O outside of lock
                         save_runtime_snapshot(&app_handle, &snapshot);
-
-                        // Dispatch notifications (blocking HTTP, but we're in a background thread)
-                        if !pending_notifications.is_empty() {
-                            if let Ok(sinks) = notification_sinks.lock() {
-                                let now = Instant::now();
-                                for notification in &pending_notifications {
-                                    // Apply cooldown: skip if we notified this session recently
-                                    if let Some(cd) = cooldown_secs {
-                                        if cd > 0 {
-                                            if let Some(last) =
-                                                last_notified.get(&notification.session_id)
-                                            {
-                                                if now.duration_since(*last).as_secs() < cd {
-                                                    continue;
-                                                }
-                                            }
-                                        }
-                                    }
-                                    let record = notifications::dispatch(&sinks, notification);
-                                    last_notified
-                                        .insert(notification.session_id.clone(), Instant::now());
-                                    if let Ok(mut history) = notification_history.lock() {
-                                        history.push(record);
-                                    }
-                                }
-                            }
-                        }
+                        notification_pipeline::dispatch_notifications(
+                            &pipeline,
+                            &notification_sinks,
+                            &notification_history,
+                            &mut last_notified,
+                        );
                     }
                 }
                 Err(e) => {
