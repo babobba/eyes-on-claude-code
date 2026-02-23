@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
 import { AnsiUp } from 'ansi_up';
+import DOMPurify from 'dompurify';
 import { tmuxCapturePane, tmuxSendKeys, tmuxGetPaneSize } from '@/lib/tauri';
 
 const POLLING_INTERVAL = 500;
@@ -47,7 +48,8 @@ export const TmuxViewer = ({ paneId, projectDir }: TmuxViewerProps) => {
   }, [content]);
 
   const htmlContent = useMemo(() => {
-    return ansiUp.ansi_to_html(trimmedContent);
+    const raw = ansiUp.ansi_to_html(trimmedContent);
+    return DOMPurify.sanitize(raw, { ALLOWED_TAGS: ['span'], ALLOWED_ATTR: ['class'] });
   }, [ansiUp, trimmedContent]);
 
   const loadContent = useCallback(async () => {
