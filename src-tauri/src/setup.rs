@@ -172,7 +172,7 @@ pub fn install_hook_script(app: &tauri::AppHandle) -> Result<PathBuf, String> {
             let mut perms = fs::metadata(script_path)
                 .map_err(|e| format!("Failed to get script permissions: {:?}", e))?
                 .permissions();
-            perms.set_mode(0o755);
+            perms.set_mode(0o700);
             fs::set_permissions(script_path, perms)
                 .map_err(|e| format!("Failed to set script permissions: {:?}", e))?;
         }
