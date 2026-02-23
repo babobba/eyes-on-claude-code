@@ -348,6 +348,7 @@ export const TmuxViewer = ({ paneId, projectDir }: TmuxViewerProps) => {
         onChange={(e) => setInputValue(e.target.value)}
         onCompositionStart={handleCompositionStart}
         onCompositionEnd={handleCompositionEnd}
+        maxLength={4096}
         className="absolute opacity-0 pointer-events-none"
         style={{ left: '-9999px' }}
         autoFocus
