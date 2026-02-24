@@ -1,17 +1,68 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 
+fn default_ssh_port() -> u16 {
+    22
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "type")]
+pub enum Transport {
+    Local {},
+    Ssh {
+        host: String,
+        #[serde(default = "default_ssh_port")]
+        port: u16,
+        user: Option<String>,
+        identity_file: Option<String>,
+    },
+    Mosh {
+        host: String,
+        #[serde(default = "default_ssh_port")]
+        port: u16,
+        user: Option<String>,
+        mosh_port: Option<u16>,
+    },
+    Tailscale {
+        host: String,
+        user: Option<String>,
+        identity_file: Option<String>,
+    },
+}
+
+impl Default for Transport {
+    fn default() -> Self {
+        Transport::Local {}
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EventType {
     SessionStart,
     SessionEnd,
     Notification,
+    NotificationResult,
     Stop,
     PostToolUse,
     UserPromptSubmit,
     #[serde(other)]
     Unknown,
+}
+
+impl EventType {
+    pub fn display_name(&self) -> &str {
+        match self {
+            EventType::SessionStart => "session_start",
+            EventType::SessionEnd => "session_end",
+            EventType::Notification => "notification",
+            EventType::NotificationResult => "notification_result",
+            EventType::Stop => "stop",
+            EventType::PostToolUse => "post_tool_use",
+            EventType::UserPromptSubmit => "user_prompt_submit",
+            EventType::Unknown => "unknown",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -22,6 +73,14 @@ pub enum NotificationType {
     #[serde(other)]
     #[default]
     Other,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HookChannelResult {
+    pub channel: String,
+    pub ok: bool,
+    #[serde(default)]
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -44,6 +103,66 @@ pub struct EventInfo {
     pub npx_path: String,
     #[serde(default)]
     pub tmux_path: String,
+    #[serde(default)]
+    pub transport_type: String,
+    #[serde(default)]
+    pub transport_host: String,
+    #[serde(default)]
+    pub transport_port: String,
+    #[serde(default)]
+    pub transport_user: String,
+    #[serde(default)]
+    pub notification_results: Vec<HookChannelResult>,
+}
+
+impl EventInfo {
+    pub fn emoji(&self) -> &str {
+        match &self.event_type {
+            EventType::Notification => match &self.notification_type {
+                NotificationType::PermissionPrompt => "🔐",
+                NotificationType::IdlePrompt => "⏳",
+                NotificationType::Other => "🔔",
+            },
+            EventType::NotificationResult => "📨",
+            EventType::Stop => "✅",
+            EventType::SessionStart => "🚀",
+            EventType::SessionEnd => "🏁",
+            EventType::PostToolUse => "🔧",
+            EventType::UserPromptSubmit => "💬",
+            EventType::Unknown => "📌",
+        }
+    }
+
+    pub fn to_transport(&self) -> Transport {
+        match self.transport_type.as_str() {
+            "ssh" => Transport::Ssh {
+                host: self.transport_host.clone(),
+                port: self.transport_port.parse().unwrap_or(22),
+                user: non_empty(&self.transport_user),
+                identity_file: None,
+            },
+            "mosh" => Transport::Mosh {
+                host: self.transport_host.clone(),
+                port: self.transport_port.parse().unwrap_or(22),
+                user: non_empty(&self.transport_user),
+                mosh_port: None,
+            },
+            "tailscale" => Transport::Tailscale {
+                host: self.transport_host.clone(),
+                user: non_empty(&self.transport_user),
+                identity_file: None,
+            },
+            _ => Transport::Local {},
+        }
+    }
+}
+
+fn non_empty(s: &str) -> Option<String> {
+    if s.is_empty() {
+        None
+    } else {
+        Some(s.to_string())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,6 +175,8 @@ pub struct SessionInfo {
     pub waiting_for: String,
     #[serde(default)]
     pub tmux_pane: String,
+    #[serde(default)]
+    pub transport: Transport,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -162,6 +283,9 @@ pub struct AppState {
     pub recent_events: VecDeque<EventInfo>,
     pub settings: Settings,
     pub cached_paths: CachedPaths,
+    /// Tracks which notification channels the hook already dispatched successfully
+    /// per session key. Cleared when the session transitions to a new status.
+    pub hook_notified_channels: HashMap<String, Vec<HookChannelResult>>,
 }
 
 impl AppState {
@@ -177,12 +301,14 @@ impl AppState {
 
     pub fn to_dashboard_data(&self) -> DashboardData {
         let mut sessions: Vec<SessionInfo> = self.sessions.values().cloned().collect();
-        sessions.sort_by(|a, b| match (a.last_event.is_empty(), b.last_event.is_empty()) {
-            (true, true) => std::cmp::Ordering::Equal,
-            (true, false) => std::cmp::Ordering::Greater,
-            (false, true) => std::cmp::Ordering::Less,
-            (false, false) => b.last_event.cmp(&a.last_event),
-        });
+        sessions.sort_by(
+            |a, b| match (a.last_event.is_empty(), b.last_event.is_empty()) {
+                (true, true) => std::cmp::Ordering::Equal,
+                (true, false) => std::cmp::Ordering::Greater,
+                (false, true) => std::cmp::Ordering::Less,
+                (false, false) => b.last_event.cmp(&a.last_event),
+            },
+        );
 
         DashboardData {
             sessions,
@@ -197,6 +323,11 @@ impl AppState {
         status: SessionStatus,
         waiting_for: String,
     ) {
+        let transport = event.to_transport();
+        let old_status = self.sessions.get(&key).map(|s| s.status.clone());
+        if old_status.as_ref() != Some(&status) {
+            self.hook_notified_channels.remove(&key);
+        }
         self.sessions
             .entry(key)
             .and_modify(|s| {
@@ -206,6 +337,9 @@ impl AppState {
                 if !event.tmux_pane.is_empty() {
                     s.tmux_pane = event.tmux_pane.clone();
                 }
+                if !matches!(transport, Transport::Local {}) {
+                    s.transport = transport.clone();
+                }
             })
             .or_insert_with(|| SessionInfo {
                 project_name: event.project_name.clone(),
@@ -214,6 +348,7 @@ impl AppState {
                 last_event: event.timestamp.clone(),
                 waiting_for,
                 tmux_pane: event.tmux_pane.clone(),
+                transport,
             });
     }
 }
@@ -236,7 +371,104 @@ mod tests {
             tmux_pane: String::new(),
             npx_path: String::new(),
             tmux_path: String::new(),
+            transport_type: String::new(),
+            transport_host: String::new(),
+            transport_port: String::new(),
+            transport_user: String::new(),
+            notification_results: Vec::new(),
         }
+    }
+
+    // -- Transport serde --
+
+    #[test]
+    fn transport_default_is_local() {
+        assert_eq!(Transport::default(), Transport::Local {});
+    }
+
+    #[test]
+    fn transport_ssh_serializes_roundtrip() {
+        let transport = Transport::Ssh {
+            host: "myhost.example.com".into(),
+            port: 2222,
+            user: Some("deploy".into()),
+            identity_file: Some("/home/user/.ssh/id_ed25519".into()),
+        };
+        let json = serde_json::to_string(&transport).unwrap();
+        let deserialized: Transport = serde_json::from_str(&json).unwrap();
+        assert_eq!(transport, deserialized);
+    }
+
+    #[test]
+    fn transport_mosh_serializes_roundtrip() {
+        let transport = Transport::Mosh {
+            host: "remote.dev".into(),
+            port: 22,
+            user: None,
+            mosh_port: Some(60001),
+        };
+        let json = serde_json::to_string(&transport).unwrap();
+        let deserialized: Transport = serde_json::from_str(&json).unwrap();
+        assert_eq!(transport, deserialized);
+    }
+
+    #[test]
+    fn transport_tailscale_serializes_roundtrip() {
+        let transport = Transport::Tailscale {
+            host: "100.64.1.2".into(),
+            user: Some("admin".into()),
+            identity_file: None,
+        };
+        let json = serde_json::to_string(&transport).unwrap();
+        let deserialized: Transport = serde_json::from_str(&json).unwrap();
+        assert_eq!(transport, deserialized);
+    }
+
+    #[test]
+    fn transport_local_serializes_roundtrip() {
+        let transport = Transport::Local {};
+        let json = serde_json::to_string(&transport).unwrap();
+        let deserialized: Transport = serde_json::from_str(&json).unwrap();
+        assert_eq!(transport, deserialized);
+    }
+
+    #[test]
+    fn transport_ssh_default_port() {
+        let json = r#"{"type":"ssh","host":"example.com"}"#;
+        let transport: Transport = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            transport,
+            Transport::Ssh {
+                host: "example.com".into(),
+                port: 22,
+                user: None,
+                identity_file: None,
+            }
+        );
+    }
+
+    #[test]
+    fn event_to_transport_ssh() {
+        let mut event = make_event(EventType::SessionStart);
+        event.transport_type = "ssh".into();
+        event.transport_host = "devbox.example.com".into();
+        event.transport_port = "2222".into();
+        event.transport_user = "deploy".into();
+        assert_eq!(
+            event.to_transport(),
+            Transport::Ssh {
+                host: "devbox.example.com".into(),
+                port: 2222,
+                user: Some("deploy".into()),
+                identity_file: None,
+            }
+        );
+    }
+
+    #[test]
+    fn event_to_transport_local_fallback() {
+        let event = make_event(EventType::SessionStart);
+        assert_eq!(event.to_transport(), Transport::Local {});
     }
 
     // -- EventType serde --
@@ -267,6 +499,10 @@ mod tests {
             serde_json::from_str::<EventType>(r#""user_prompt_submit""#).unwrap(),
             EventType::UserPromptSubmit
         );
+        assert_eq!(
+            serde_json::from_str::<EventType>(r#""notification_result""#).unwrap(),
+            EventType::NotificationResult
+        );
     }
 
     #[test]
@@ -286,6 +522,10 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&EventType::PostToolUse).unwrap(),
             r#""post_tool_use""#
+        );
+        assert_eq!(
+            serde_json::to_string(&EventType::NotificationResult).unwrap(),
+            r#""notification_result""#
         );
     }
 
@@ -436,6 +676,7 @@ mod tests {
                 last_event: String::new(),
                 waiting_for: String::new(),
                 tmux_pane: String::new(),
+                transport: Transport::default(),
             },
         );
         state.sessions.insert(
@@ -447,6 +688,7 @@ mod tests {
                 last_event: String::new(),
                 waiting_for: String::new(),
                 tmux_pane: String::new(),
+                transport: Transport::default(),
             },
         );
         assert_eq!(state.waiting_session_count(), 2);
@@ -464,6 +706,7 @@ mod tests {
                 last_event: String::new(),
                 waiting_for: String::new(),
                 tmux_pane: String::new(),
+                transport: Transport::default(),
             },
         );
         state.sessions.insert(
@@ -475,6 +718,7 @@ mod tests {
                 last_event: String::new(),
                 waiting_for: String::new(),
                 tmux_pane: String::new(),
+                transport: Transport::default(),
             },
         );
         assert_eq!(state.waiting_session_count(), 0);
@@ -492,6 +736,7 @@ mod tests {
                 last_event: "2025-01-01T00:00:00Z".into(),
                 waiting_for: String::new(),
                 tmux_pane: String::new(),
+                transport: Transport::default(),
             },
         );
         state.sessions.insert(
@@ -503,6 +748,7 @@ mod tests {
                 last_event: "2025-01-02T00:00:00Z".into(),
                 waiting_for: String::new(),
                 tmux_pane: String::new(),
+                transport: Transport::default(),
             },
         );
 
@@ -523,6 +769,7 @@ mod tests {
                 last_event: String::new(),
                 waiting_for: String::new(),
                 tmux_pane: String::new(),
+                transport: Transport::default(),
             },
         );
         state.sessions.insert(
@@ -534,6 +781,7 @@ mod tests {
                 last_event: "2025-01-01T00:00:00Z".into(),
                 waiting_for: String::new(),
                 tmux_pane: String::new(),
+                transport: Transport::default(),
             },
         );
 
@@ -563,12 +811,7 @@ mod tests {
     fn upsert_updates_existing_session() {
         let mut state = AppState::default();
         let event = make_event(EventType::SessionStart);
-        state.upsert_session(
-            "/proj".into(),
-            &event,
-            SessionStatus::Active,
-            String::new(),
-        );
+        state.upsert_session("/proj".into(), &event, SessionStatus::Active, String::new());
 
         let mut event2 = make_event(EventType::Notification);
         event2.timestamp = "2025-01-01T01:00:00Z".into();
@@ -591,12 +834,7 @@ mod tests {
         let mut state = AppState::default();
         let mut event = make_event(EventType::SessionStart);
         event.tmux_pane = "%0".into();
-        state.upsert_session(
-            "/proj".into(),
-            &event,
-            SessionStatus::Active,
-            String::new(),
-        );
+        state.upsert_session("/proj".into(), &event, SessionStatus::Active, String::new());
 
         let event2 = make_event(EventType::PostToolUse);
         state.upsert_session(
@@ -651,5 +889,61 @@ mod tests {
         assert!(event.tmux_pane.is_empty());
         assert!(event.npx_path.is_empty());
         assert!(event.tmux_path.is_empty());
+    }
+
+    // -- HookChannelResult --
+
+    #[test]
+    fn hook_channel_result_deserializes() {
+        let json = r#"{"channel": "ntfy", "ok": true, "error": null}"#;
+        let result: HookChannelResult = serde_json::from_str(json).unwrap();
+        assert_eq!(result.channel, "ntfy");
+        assert!(result.ok);
+        assert!(result.error.is_none());
+    }
+
+    #[test]
+    fn hook_channel_result_with_error() {
+        let json = r#"{"channel": "webhook", "ok": false, "error": "timeout"}"#;
+        let result: HookChannelResult = serde_json::from_str(json).unwrap();
+        assert!(!result.ok);
+        assert_eq!(result.error.as_deref(), Some("timeout"));
+    }
+
+    #[test]
+    fn event_info_notification_results_defaults_empty() {
+        let json = r#"{
+            "timestamp": "2025-01-01T00:00:00Z",
+            "event": "notification",
+            "matcher": "",
+            "project_name": "proj",
+            "project_dir": "/proj",
+            "session_id": "s1",
+            "message": ""
+        }"#;
+        let event: EventInfo = serde_json::from_str(json).unwrap();
+        assert!(event.notification_results.is_empty());
+    }
+
+    #[test]
+    fn event_info_notification_result_parses_results() {
+        let json = r#"{
+            "timestamp": "2025-01-01T00:00:00Z",
+            "event": "notification_result",
+            "matcher": "",
+            "project_name": "proj",
+            "project_dir": "/proj",
+            "session_id": "",
+            "message": "",
+            "notification_results": [
+                {"channel": "ntfy", "ok": true, "error": null},
+                {"channel": "webhook", "ok": false, "error": "timeout"}
+            ]
+        }"#;
+        let event: EventInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(event.event_type, EventType::NotificationResult);
+        assert_eq!(event.notification_results.len(), 2);
+        assert!(event.notification_results[0].ok);
+        assert!(!event.notification_results[1].ok);
     }
 }

@@ -1,10 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import {
-  getStatusEmoji,
-  getStatusClass,
-  allHooksConfigured,
-  formatRelativeTime,
-} from '../utils';
+import { getStatusEmoji, getStatusClass, allHooksConfigured, formatRelativeTime } from '../utils';
 import type { HookStatus } from '@/types';
 
 describe('getStatusEmoji', () => {

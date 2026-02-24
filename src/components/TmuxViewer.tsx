@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
 import { AnsiUp } from 'ansi_up';
+import DOMPurify from 'dompurify';
 import { tmuxCapturePane, tmuxSendKeys, tmuxGetPaneSize } from '@/lib/tauri';
 
 const POLLING_INTERVAL = 500;
@@ -13,9 +14,10 @@ const MAX_WINDOW_WIDTH = 1600;
 
 interface TmuxViewerProps {
   paneId: string;
+  projectDir?: string;
 }
 
-export const TmuxViewer = ({ paneId }: TmuxViewerProps) => {
+export const TmuxViewer = ({ paneId, projectDir }: TmuxViewerProps) => {
   const [content, setContent] = useState<string>('');
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -46,13 +48,14 @@ export const TmuxViewer = ({ paneId }: TmuxViewerProps) => {
   }, [content]);
 
   const htmlContent = useMemo(() => {
-    return ansiUp.ansi_to_html(trimmedContent);
+    const raw = ansiUp.ansi_to_html(trimmedContent);
+    return DOMPurify.sanitize(raw, { ALLOWED_TAGS: ['span'], ALLOWED_ATTR: ['class'] });
   }, [ansiUp, trimmedContent]);
 
   const loadContent = useCallback(async () => {
     if (!isMountedRef.current) return;
     try {
-      const newContent = await tmuxCapturePane(paneId);
+      const newContent = await tmuxCapturePane(paneId, projectDir);
       if (!isMountedRef.current) return;
       if (newContent !== prevContentRef.current) {
         setContent(newContent);
@@ -67,7 +70,7 @@ export const TmuxViewer = ({ paneId }: TmuxViewerProps) => {
         setIsLoading(false);
       }
     }
-  }, [paneId]);
+  }, [paneId, projectDir]);
 
   const handleClose = async () => {
     try {
@@ -168,7 +171,7 @@ export const TmuxViewer = ({ paneId }: TmuxViewerProps) => {
       if (tmuxKey) {
         e.preventDefault();
         try {
-          await tmuxSendKeys(paneId, tmuxKey);
+          await tmuxSendKeys(paneId, tmuxKey, projectDir);
           // Refresh immediately after sending key for responsive feedback
           loadContent().catch(console.error);
         } catch (err) {
@@ -176,7 +179,7 @@ export const TmuxViewer = ({ paneId }: TmuxViewerProps) => {
         }
       }
     },
-    [paneId, loadContent]
+    [paneId, projectDir, loadContent]
   );
 
   const handleCompositionStart = useCallback(() => {
@@ -194,7 +197,7 @@ export const TmuxViewer = ({ paneId }: TmuxViewerProps) => {
       const text = e.data;
       if (text) {
         try {
-          await tmuxSendKeys(paneId, text);
+          await tmuxSendKeys(paneId, text, projectDir);
           // Refresh immediately after sending composed text
           loadContent().catch(console.error);
         } catch (err) {
@@ -211,7 +214,7 @@ export const TmuxViewer = ({ paneId }: TmuxViewerProps) => {
         justComposedRef.current = false;
       }, 100);
     },
-    [paneId, loadContent]
+    [paneId, projectDir, loadContent]
   );
 
   const handlePaste = useCallback(
@@ -220,14 +223,14 @@ export const TmuxViewer = ({ paneId }: TmuxViewerProps) => {
       if (text) {
         e.preventDefault();
         try {
-          await tmuxSendKeys(paneId, text);
+          await tmuxSendKeys(paneId, text, projectDir);
           loadContent().catch(console.error);
         } catch (err) {
           console.error('Failed to paste text:', err);
         }
       }
     },
-    [paneId, loadContent]
+    [paneId, projectDir, loadContent]
   );
 
   useEffect(() => {
@@ -241,7 +244,7 @@ export const TmuxViewer = ({ paneId }: TmuxViewerProps) => {
   useEffect(() => {
     const resizeWindowToPane = async () => {
       try {
-        const size = await tmuxGetPaneSize(paneId);
+        const size = await tmuxGetPaneSize(paneId, projectDir);
         const calculatedWidth = Math.round(size.width * CHAR_WIDTH + WINDOW_PADDING);
         const windowWidth = Math.min(MAX_WINDOW_WIDTH, Math.max(MIN_WINDOW_WIDTH, calculatedWidth));
         const win = getCurrentWindow();
@@ -251,7 +254,7 @@ export const TmuxViewer = ({ paneId }: TmuxViewerProps) => {
       }
     };
     resizeWindowToPane();
-  }, [paneId]);
+  }, [paneId, projectDir]);
 
   useEffect(() => {
     window.addEventListener('keydown', handleKeyDown);
@@ -345,6 +348,7 @@ export const TmuxViewer = ({ paneId }: TmuxViewerProps) => {
         onChange={(e) => setInputValue(e.target.value)}
         onCompositionStart={handleCompositionStart}
         onCompositionEnd={handleCompositionEnd}
+        maxLength={4096}
         className="absolute opacity-0 pointer-events-none"
         style={{ left: '-9999px' }}
         autoFocus

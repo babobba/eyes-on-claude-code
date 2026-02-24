@@ -1,161 +1,13 @@
-use serde::{Deserialize, Serialize};
+use eocc_core::notifications::NotificationSettings;
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum EventType {
-    SessionStart,
-    SessionEnd,
-    Notification,
-    Stop,
-    PostToolUse,
-    UserPromptSubmit,
-    #[serde(other)]
-    Unknown,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum NotificationType {
-    PermissionPrompt,
-    IdlePrompt,
-    #[serde(other)]
-    #[default]
-    Other,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EventInfo {
-    pub timestamp: String,
-    #[serde(rename = "event")]
-    pub event_type: EventType,
-    pub matcher: String,
-    pub project_name: String,
-    pub project_dir: String,
-    pub session_id: String,
-    pub message: String,
-    #[serde(default)]
-    pub notification_type: NotificationType,
-    #[serde(default)]
-    pub tool_name: String,
-    #[serde(default)]
-    pub tmux_pane: String,
-    #[serde(default)]
-    pub npx_path: String,
-    #[serde(default)]
-    pub tmux_path: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SessionInfo {
-    pub project_name: String,
-    pub project_dir: String,
-    pub status: SessionStatus,
-    pub last_event: String,
-    #[serde(default)]
-    pub waiting_for: String,
-    #[serde(default)]
-    pub tmux_pane: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum SessionStatus {
-    Active,
-    WaitingPermission,
-    WaitingInput,
-    Completed,
-}
-
-impl SessionStatus {
-    pub fn emoji(&self) -> &str {
-        match self {
-            SessionStatus::Active => "🟢",
-            SessionStatus::WaitingPermission => "🔐",
-            SessionStatus::WaitingInput => "⏳",
-            SessionStatus::Completed => "✅",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DashboardData {
-    pub sessions: Vec<SessionInfo>,
-    pub events: Vec<EventInfo>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Settings {
-    #[serde(default = "Settings::default_always_on_top")]
-    pub always_on_top: bool,
-    #[serde(default = "Settings::default_minimum_mode_enabled")]
-    pub minimum_mode_enabled: bool,
-    #[serde(default = "Settings::default_opacity_active")]
-    pub opacity_active: f64,
-    #[serde(default = "Settings::default_opacity_inactive")]
-    pub opacity_inactive: f64,
-    #[serde(default = "Settings::default_sound_enabled")]
-    pub sound_enabled: bool,
-}
-
-impl Settings {
-    pub const DEFAULT_ALWAYS_ON_TOP: bool = true;
-    pub const DEFAULT_MINIMUM_MODE_ENABLED: bool = true;
-    pub const DEFAULT_OPACITY_ACTIVE: f64 = 1.0;
-    pub const DEFAULT_OPACITY_INACTIVE: f64 = 1.0;
-    pub const DEFAULT_SOUND_ENABLED: bool = true;
-
-    fn default_always_on_top() -> bool {
-        Self::DEFAULT_ALWAYS_ON_TOP
-    }
-
-    fn default_minimum_mode_enabled() -> bool {
-        Self::DEFAULT_MINIMUM_MODE_ENABLED
-    }
-
-    fn default_opacity_active() -> f64 {
-        Self::DEFAULT_OPACITY_ACTIVE
-    }
-
-    fn default_opacity_inactive() -> f64 {
-        Self::DEFAULT_OPACITY_INACTIVE
-    }
-
-    fn default_sound_enabled() -> bool {
-        Self::DEFAULT_SOUND_ENABLED
-    }
-}
-
-impl Default for Settings {
-    fn default() -> Self {
-        Self {
-            always_on_top: Self::DEFAULT_ALWAYS_ON_TOP,
-            minimum_mode_enabled: Self::DEFAULT_MINIMUM_MODE_ENABLED,
-            opacity_active: Self::DEFAULT_OPACITY_ACTIVE,
-            opacity_inactive: Self::DEFAULT_OPACITY_INACTIVE,
-            sound_enabled: Self::DEFAULT_SOUND_ENABLED,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct CachedPaths {
-    #[serde(default)]
-    pub npx_path: String,
-    #[serde(default)]
-    pub tmux_path: String,
-}
-
-impl CachedPaths {
-    pub fn update_from_event(&mut self, event: &EventInfo) {
-        if !event.npx_path.is_empty() {
-            self.npx_path = event.npx_path.clone();
-        }
-        if !event.tmux_path.is_empty() {
-            self.tmux_path = event.tmux_path.clone();
-        }
-    }
-}
+// Re-export all shared types from eocc-core so the rest of the crate
+// can continue to `use crate::state::SessionInfo` etc. without changes.
+pub use eocc_core::state::{
+    CachedPaths, DashboardData, EventInfo, EventType, HookChannelResult, NotificationType,
+    SessionInfo, SessionStatus, Settings, Transport,
+};
 
 #[derive(Default)]
 pub struct AppState {
@@ -163,6 +15,10 @@ pub struct AppState {
     pub recent_events: VecDeque<EventInfo>,
     pub settings: Settings,
     pub cached_paths: CachedPaths,
+    pub notification_settings: NotificationSettings,
+    /// Tracks which notification channels the hook already dispatched successfully
+    /// per session key. Cleared when the session transitions to a new status.
+    pub hook_notified_channels: HashMap<String, Vec<HookChannelResult>>,
 }
 
 impl AppState {
@@ -195,6 +51,17 @@ impl AppState {
         }
     }
 
+    /// Look up the transport for a session by project directory.
+    /// Returns `Transport::Local` if the session is not found.
+    pub fn get_transport(&self, project_dir: Option<&str>) -> Transport {
+        if let Some(dir) = project_dir {
+            if let Some(session) = self.sessions.get(dir) {
+                return session.transport.clone();
+            }
+        }
+        Transport::Local {}
+    }
+
     /// Insert or update a session with the given status and waiting_for info
     pub fn upsert_session(
         &mut self,
@@ -203,6 +70,11 @@ impl AppState {
         status: SessionStatus,
         waiting_for: String,
     ) {
+        let transport = event.to_transport();
+        let old_status = self.sessions.get(&key).map(|s| s.status.clone());
+        if old_status.as_ref() != Some(&status) {
+            self.hook_notified_channels.remove(&key);
+        }
         self.sessions
             .entry(key)
             .and_modify(|s| {
@@ -212,6 +84,9 @@ impl AppState {
                 if !event.tmux_pane.is_empty() {
                     s.tmux_pane = event.tmux_pane.clone();
                 }
+                if !matches!(transport, Transport::Local {}) {
+                    s.transport = transport.clone();
+                }
             })
             .or_insert_with(|| SessionInfo {
                 project_name: event.project_name.clone(),
@@ -220,8 +95,17 @@ impl AppState {
                 last_event: event.timestamp.clone(),
                 waiting_for,
                 tmux_pane: event.tmux_pane.clone(),
+                transport,
             });
     }
 }
 
 pub struct ManagedState(pub Arc<Mutex<AppState>>);
+
+pub struct NotificationSinksState(
+    pub Arc<Mutex<Vec<Box<dyn eocc_core::notifications::NotificationSink>>>>,
+);
+
+pub struct NotificationHistoryState(
+    pub Arc<Mutex<eocc_core::notifications::history::NotificationHistory>>,
+);

@@ -33,9 +33,6 @@ export const useWindowOpacity = (activeOpacity: number, inactiveOpacity: number)
     let unlisten: UnlistenFn | undefined;
 
     // Listen for custom dashboard-active event from Rust backend
-    // This event is emitted when:
-    // - Dashboard gains/loses focus
-    // - A difit window gains focus (dashboard becomes inactive)
     listen<boolean>('dashboard-active', (event) => {
       applyOpacity(event.payload);
     }).then((u) => {

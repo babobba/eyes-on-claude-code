@@ -11,6 +11,7 @@ const makeSession = (status: SessionInfo['status']): SessionInfo => ({
   last_event: '2025-01-01T00:00:00Z',
   waiting_for: '',
   tmux_pane: '',
+  transport: { type: 'local' as const },
 });
 
 describe('Header', () => {

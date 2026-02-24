@@ -12,15 +12,11 @@ import { useWindowOpacity } from '@/hooks/useWindowOpacity';
 import { useWindowDrag } from '@/hooks/useWindowDrag';
 import { Header } from '@/components/Header';
 import { MinimumView } from '@/components/MinimumView';
+import { NotificationSettings } from '@/components/NotificationSettings';
 import { SessionList } from '@/components/SessionList';
 import { SetupModal } from '@/components/SetupModal';
 import { TmuxViewer } from '@/components/TmuxViewer';
-import {
-  onWindowFocus,
-  bringDiffWindowsToFront,
-  getSetupStatus,
-  setWindowSizeForSetup,
-} from '@/lib/tauri';
+import { getSetupStatus, setWindowSizeForSetup } from '@/lib/tauri';
 import { allHooksConfigured } from '@/lib/utils';
 import type { SetupStatus } from '@/types';
 
@@ -113,6 +109,7 @@ const DEBOUNCE_MS = 150;
 const Dashboard = () => {
   const { dashboardData, settings, isLoading, refreshData } = useAppContext();
   const [isActive, setIsActiveState] = useState(true);
+  const [showNotificationSettings, setShowNotificationSettings] = useState(false);
   const isActiveRef = useRef(true);
   const savedStateRef = useRef<SavedWindowState | null>(loadSavedWindowState());
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -300,29 +297,6 @@ const Dashboard = () => {
   // Handle window drag
   useWindowDrag();
 
-  // Bring diff windows to front when dashboard is focused (via Cmd+Tab etc.)
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    let mounted = true;
-
-    onWindowFocus(() => {
-      bringDiffWindowsToFront().catch(console.error);
-    })
-      .then((u) => {
-        if (mounted) {
-          unlisten = u;
-        } else {
-          u();
-        }
-      })
-      .catch(console.error);
-
-    return () => {
-      mounted = false;
-      unlisten?.();
-    };
-  }, []);
-
   if (isLoading) {
     return (
       <div className="container bg-bg-primary h-screen rounded-xl max-w-[900px] mx-auto p-2.5 flex items-center justify-center">
@@ -338,8 +312,16 @@ const Dashboard = () => {
 
   return (
     <div className="container bg-bg-primary h-screen rounded-xl max-w-[900px] mx-auto flex flex-col p-2.5">
-      <Header sessions={dashboardData.sessions} onRefresh={refreshData} />
-      <SessionList sessions={dashboardData.sessions} />
+      <Header
+        sessions={dashboardData.sessions}
+        onRefresh={refreshData}
+        onToggleNotifications={() => setShowNotificationSettings((v) => !v)}
+      />
+      {showNotificationSettings ? (
+        <NotificationSettings onClose={() => setShowNotificationSettings(false)} />
+      ) : (
+        <SessionList sessions={dashboardData.sessions} />
+      )}
     </div>
   );
 };
@@ -349,10 +331,19 @@ function App() {
   const [showSetupModal, setShowSetupModal] = useState(false);
   const [setupChecked, setSetupChecked] = useState(false);
 
-  // Parse URL parameters to check if this is a tmux viewer window
+  // Parse and validate URL parameters for tmux viewer window
   const tmuxPaneId = useMemo(() => {
     const params = new URLSearchParams(window.location.search);
-    return params.get('tmux_pane');
+    const pane = params.get('tmux_pane');
+    if (pane && /^%\d+$/.test(pane)) return pane;
+    return null;
+  }, []);
+
+  const tmuxProjectDir = useMemo(() => {
+    const params = new URLSearchParams(window.location.search);
+    const dir = params.get('project_dir');
+    if (dir && dir.startsWith('/')) return dir;
+    return undefined;
   }, []);
 
   // Check setup status on mount (skip for tmux viewer windows)
@@ -385,7 +376,7 @@ function App() {
 
   // Render tmux viewer if pane_id is in URL
   if (tmuxPaneId) {
-    return <TmuxViewer paneId={tmuxPaneId} />;
+    return <TmuxViewer paneId={tmuxPaneId} projectDir={tmuxProjectDir} />;
   }
 
   // Wait for setup check before showing anything

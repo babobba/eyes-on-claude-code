@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>EOCC - tmux viewer</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #0d0d1a;
+    color: #e0e0e0;
+    font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
+    font-size: 13px;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .toolbar {
+    display: flex;
+    gap: 6px;
+    padding: 8px;
+    background: #1a1a2e;
+    border-bottom: 1px solid #2a2a3e;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+  .toolbar button {
+    background: #333;
+    color: #e0e0e0;
+    border: none;
+    padding: 6px 14px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 13px;
+    font-family: inherit;
+    transition: background 0.15s;
+  }
+  .toolbar button:hover { background: #444; }
+  .toolbar button:active { background: #555; }
+  .toolbar .approve { background: #27ae60; color: #fff; }
+  .toolbar .approve:hover { background: #2ecc71; }
+  .toolbar .deny { background: #c0392b; color: #fff; }
+  .toolbar .deny:hover { background: #e74c3c; }
+  .toolbar .status {
+    margin-left: auto;
+    font-size: 11px;
+    color: #888;
+  }
+  #terminal {
+    flex: 1;
+    overflow: auto;
+    padding: 8px;
+    white-space: pre;
+    line-height: 1.3;
+    -webkit-overflow-scrolling: touch;
+  }
+  .input-bar {
+    display: flex;
+    gap: 6px;
+    padding: 8px;
+    background: #1a1a2e;
+    border-top: 1px solid #2a2a3e;
+  }
+  .input-bar input {
+    flex: 1;
+    background: #0d0d1a;
+    color: #e0e0e0;
+    border: 1px solid #333;
+    padding: 8px 10px;
+    font-family: inherit;
+    font-size: 14px;
+    border-radius: 4px;
+    outline: none;
+  }
+  .input-bar input:focus { border-color: #6c5ce7; }
+  .input-bar button {
+    background: #6c5ce7;
+    color: #fff;
+    border: none;
+    padding: 8px 18px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 14px;
+    font-family: inherit;
+  }
+  .input-bar button:hover { background: #7d6ef0; }
+</style>
+</head>
+<body>
+<div class="toolbar">
+  <button class="approve" onclick="sendKeys('y\n')">Approve</button>
+  <button class="deny" onclick="sendKeys('n\n')">Deny</button>
+  <button onclick="sendKeys('Enter')">Enter</button>
+  <button onclick="sendKeys('C-c')">Ctrl+C</button>
+  <span class="status" id="status">Connecting...</span>
+</div>
+<div id="terminal">Loading...</div>
+<div class="input-bar">
+  <input id="keys-input" placeholder="Type keys to send..." autocapitalize="off" autocorrect="off" spellcheck="false">
+  <button onclick="sendInput()">Send</button>
+</div>
+<script>
+const paneId = '{{PANE_ID}}';
+const projectDir = '{{PROJECT_DIR}}';
+let pollInterval = null;
+let lastContent = '';
+
+async function capture() {
+  try {
+    const params = new URLSearchParams();
+    if (projectDir) params.set('project_dir', projectDir);
+    const url = '/api/tmux/' + encodeURIComponent(paneId) + '/capture?' + params.toString();
+    const res = await fetch(url);
+    if (res.ok) {
+      const text = await res.text();
+      if (text !== lastContent) {
+        lastContent = text;
+        const el = document.getElementById('terminal');
+        el.textContent = text;
+        el.scrollTop = el.scrollHeight;
+      }
+      document.getElementById('status').textContent = 'Connected';
+    } else {
+      document.getElementById('status').textContent = 'Error: ' + res.status;
+    }
+  } catch (e) {
+    document.getElementById('status').textContent = 'Disconnected';
+  }
+}
+
+async function sendKeys(keys) {
+  try {
+    const body = { keys: keys };
+    if (projectDir) body.project_dir = projectDir;
+    await fetch('/api/tmux/' + encodeURIComponent(paneId) + '/send', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    setTimeout(capture, 100);
+  } catch (e) {
+    console.error('sendKeys failed:', e);
+  }
+}
+
+function sendInput() {
+  const input = document.getElementById('keys-input');
+  if (input.value) {
+    sendKeys(input.value);
+    input.value = '';
+  }
+  input.focus();
+}
+
+document.getElementById('keys-input').addEventListener('keydown', function(e) {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    sendInput();
+  }
+});
+
+capture();
+pollInterval = setInterval(capture, 500);
+</script>
+</body>
+</html>

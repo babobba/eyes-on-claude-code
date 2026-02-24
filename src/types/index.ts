@@ -14,6 +14,38 @@ export type EventType =
   | 'user_prompt_submit'
   | 'unknown';
 
+// Network transport types for remote session support
+export type TransportType = 'local' | 'ssh' | 'mosh' | 'tailscale';
+
+export interface TransportLocal {
+  type: 'local';
+}
+
+export interface TransportSsh {
+  type: 'ssh';
+  host: string;
+  port: number;
+  user?: string | null;
+  identity_file?: string | null;
+}
+
+export interface TransportMosh {
+  type: 'mosh';
+  host: string;
+  port: number;
+  user?: string | null;
+  mosh_port?: number | null;
+}
+
+export interface TransportTailscale {
+  type: 'tailscale';
+  host: string;
+  user?: string | null;
+  identity_file?: string | null;
+}
+
+export type Transport = TransportLocal | TransportSsh | TransportMosh | TransportTailscale;
+
 export interface SessionInfo {
   project_name: string;
   project_dir: string;
@@ -21,6 +53,7 @@ export interface SessionInfo {
   last_event: string;
   waiting_for: string;
   tmux_pane: string;
+  transport: Transport;
 }
 
 export interface EventInfo {
@@ -59,9 +92,6 @@ export interface GitInfo {
   is_git_repo: boolean;
 }
 
-// Diff type for difit integration
-export type DiffType = 'unstaged' | 'staged' | 'commit' | 'branch';
-
 // Tmux pane information
 export interface TmuxPane {
   session_name: string;
@@ -76,6 +106,62 @@ export interface TmuxPane {
 export interface TmuxPaneSize {
   width: number;
   height: number;
+}
+
+// Notification channel configuration (tagged union matching Rust ChannelConfig)
+export interface NtfyChannel {
+  type: 'ntfy';
+  server: string;
+  topic: string;
+  token?: string | null;
+}
+
+export interface WebhookChannel {
+  type: 'webhook';
+  url: string;
+}
+
+export interface PushoverChannel {
+  type: 'pushover';
+  user_key: string;
+  app_token: string;
+  device?: string | null;
+}
+
+export interface DesktopChannel {
+  type: 'desktop';
+}
+
+export type ChannelConfig = NtfyChannel | WebhookChannel | PushoverChannel | DesktopChannel;
+
+export interface ProjectRule {
+  pattern: string;
+  enabled?: boolean | null;
+  notify_on?: SessionStatus[] | null;
+}
+
+export interface NotificationSettings {
+  enabled: boolean;
+  channels: ChannelConfig[];
+  notify_on: SessionStatus[];
+  project_rules: ProjectRule[];
+  cooldown_seconds?: number | null;
+  title_template?: string | null;
+  body_template?: string | null;
+}
+
+export interface ChannelResult {
+  name: string;
+  success: boolean;
+  error?: string | null;
+}
+
+export interface NotificationRecord {
+  timestamp: string;
+  project_name: string;
+  project_dir: string;
+  status: string;
+  channels: ChannelResult[];
 }
 
 // Status of each individual hook type

@@ -1,10 +1,10 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import { getCurrentWindow, getAllWindows } from '@tauri-apps/api/window';
 import type {
   DashboardData,
-  DiffType,
   GitInfo,
+  NotificationRecord,
+  NotificationSettings,
   Settings,
   SetupStatus,
   TmuxPane,
@@ -22,10 +22,15 @@ export const getRepoGitInfo = (projectDir: string) =>
 export const getRepoBranches = (projectDir: string) =>
   invoke<string[]>('get_repo_branches', { projectDir });
 
-export type { DiffType };
-
-export const openDiff = (projectDir: string, diffType: DiffType, baseBranch?: string) =>
-  invoke('open_diff', { projectDir, diffType, baseBranch });
+// Notification commands
+export const getNotificationSettings = () =>
+  invoke<NotificationSettings>('get_notification_settings');
+export const updateNotificationSettings = (settings: NotificationSettings) =>
+  invoke('update_notification_settings', { settings });
+export const sendTestNotification = () => invoke('send_test_notification');
+export const getNotificationHistory = () =>
+  invoke<NotificationRecord[]>('get_notification_history');
+export const clearNotificationHistory = () => invoke('clear_notification_history');
 
 // Setup commands
 export const getSetupStatus = () => invoke<SetupStatus>('get_setup_status');
@@ -47,28 +52,14 @@ export const onWindowFocus = (callback: () => void): Promise<UnlistenFn> => {
   return listen('tauri://focus', callback);
 };
 
-// Bring all diff windows to front
-export const bringDiffWindowsToFront = async (): Promise<void> => {
-  const windows = await getAllWindows();
-  const diffWindows = windows.filter((w) => w.label.startsWith('difit-'));
-
-  for (const window of diffWindows) {
-    await window.show();
-    await window.unminimize();
-    await window.setFocus();
-  }
-
-  // Re-focus dashboard to keep it on top
-  const dashboard = getCurrentWindow();
-  await dashboard.setFocus();
-};
-
 // Tmux commands
 export const tmuxIsAvailable = () => invoke<boolean>('tmux_is_available');
 export const tmuxListPanes = () => invoke<TmuxPane[]>('tmux_list_panes');
-export const tmuxCapturePane = (paneId: string) => invoke<string>('tmux_capture_pane', { paneId });
-export const tmuxSendKeys = (paneId: string, keys: string) =>
-  invoke('tmux_send_keys', { paneId, keys });
-export const tmuxGetPaneSize = (paneId: string) =>
-  invoke<TmuxPaneSize>('tmux_get_pane_size', { paneId });
-export const openTmuxViewer = (paneId: string) => invoke('open_tmux_viewer', { paneId });
+export const tmuxCapturePane = (paneId: string, projectDir?: string) =>
+  invoke<string>('tmux_capture_pane', { paneId, projectDir });
+export const tmuxSendKeys = (paneId: string, keys: string, projectDir?: string) =>
+  invoke('tmux_send_keys', { paneId, keys, projectDir });
+export const tmuxGetPaneSize = (paneId: string, projectDir?: string) =>
+  invoke<TmuxPaneSize>('tmux_get_pane_size', { paneId, projectDir });
+export const openTmuxViewer = (paneId: string, projectDir?: string) =>
+  invoke('open_tmux_viewer', { paneId, projectDir });

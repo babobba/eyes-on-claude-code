@@ -3,16 +3,14 @@ import { render, screen } from '@testing-library/react';
 import { SessionList } from '../SessionList';
 import type { SessionInfo } from '@/types';
 
-const makeSession = (
-  name: string,
-  status: SessionInfo['status'] = 'Active'
-): SessionInfo => ({
+const makeSession = (name: string, status: SessionInfo['status'] = 'Active'): SessionInfo => ({
   project_name: name,
   project_dir: `/home/user/${name}`,
   status,
   last_event: '2025-01-01T00:00:00Z',
   waiting_for: '',
   tmux_pane: '',
+  transport: { type: 'local' as const },
 });
 
 describe('SessionList', () => {

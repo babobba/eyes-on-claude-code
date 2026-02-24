@@ -7,8 +7,17 @@ license = "MIT"
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
+[features]
+default = ["desktop", "ntfy", "webhook", "pushover", "desktop_notifications"]
+desktop = []
+ntfy = ["eocc-core/ntfy"]
+webhook = ["eocc-core/webhook"]
+pushover = ["eocc-core/pushover"]
+desktop_notifications = ["eocc-core/desktop_notifications"]
+
 [dependencies]
-tauri = { version = "2", features = ["tray-icon", "image-png", "macos-private-api", "webview-data-url"] }
+eocc-core = { path = "crates/eocc-core" }
+tauri = { version = "2", features = ["tray-icon", "image-png", "macos-private-api"] }
 tauri-plugin-shell = "2"
 tauri-plugin-log = "2"
 log = "0.4"
@@ -18,8 +27,8 @@ notify = "8"
 dirs = "6"
 opener = "0.8"
 anyhow = "1"
-base64 = "0.22"
 urlencoding = "2"
+tiny_http = "0.12"
 
 [profile.release]
 strip = true

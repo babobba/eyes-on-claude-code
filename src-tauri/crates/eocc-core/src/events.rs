@@ -18,6 +18,8 @@ pub fn process_event(state: &mut AppState, event: EventInfo) {
     match event.event_type {
         EventType::SessionStart => {
             state.cached_paths.update_from_event(&event);
+            state.hook_notified_channels.remove(&key);
+            let transport = event.to_transport();
             state.sessions.insert(
                 key,
                 SessionInfo {
@@ -27,11 +29,13 @@ pub fn process_event(state: &mut AppState, event: EventInfo) {
                     last_event: event.timestamp.clone(),
                     waiting_for: String::new(),
                     tmux_pane: event.tmux_pane,
+                    transport,
                 },
             );
         }
         EventType::SessionEnd => {
             state.sessions.remove(&key);
+            state.hook_notified_channels.remove(&key);
         }
         EventType::Notification => {
             let new_status = match event.notification_type {
@@ -58,6 +62,13 @@ pub fn process_event(state: &mut AppState, event: EventInfo) {
         EventType::UserPromptSubmit => {
             state.upsert_session(key, &event, SessionStatus::Active, String::new());
         }
+        EventType::NotificationResult => {
+            if !event.notification_results.is_empty() {
+                state
+                    .hook_notified_channels
+                    .insert(key, event.notification_results);
+            }
+        }
         EventType::Unknown => {
             if let Some(session) = state.sessions.get_mut(&key) {
                 session.last_event = event.timestamp;
@@ -76,6 +87,7 @@ pub fn apply_events_to_state(state: &mut AppState, events: &[EventInfo]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::HookChannelResult;
 
     fn make_event(event_type: EventType, notification_type: NotificationType) -> EventInfo {
         EventInfo {
@@ -91,6 +103,11 @@ mod tests {
             tmux_pane: String::new(),
             npx_path: String::new(),
             tmux_path: String::new(),
+            transport_type: String::new(),
+            transport_host: String::new(),
+            transport_port: String::new(),
+            transport_user: String::new(),
+            notification_results: Vec::new(),
         }
     }
 
@@ -540,19 +557,11 @@ mod tests {
         process_event(&mut state, perm);
 
         assert_eq!(
-            state
-                .sessions
-                .get("/home/user/project-a")
-                .unwrap()
-                .status,
+            state.sessions.get("/home/user/project-a").unwrap().status,
             SessionStatus::WaitingPermission
         );
         assert_eq!(
-            state
-                .sessions
-                .get("/home/user/project-b")
-                .unwrap()
-                .status,
+            state.sessions.get("/home/user/project-b").unwrap().status,
             SessionStatus::Active
         );
         assert_eq!(state.waiting_session_count(), 1);
@@ -563,11 +572,7 @@ mod tests {
         stop.project_name = "project-b".into();
         process_event(&mut state, stop);
         assert_eq!(
-            state
-                .sessions
-                .get("/home/user/project-b")
-                .unwrap()
-                .status,
+            state.sessions.get("/home/user/project-b").unwrap().status,
             SessionStatus::Completed
         );
         assert_eq!(state.waiting_session_count(), 1);
@@ -579,5 +584,102 @@ mod tests {
         process_event(&mut state, end);
         assert_eq!(state.sessions.len(), 1);
         assert_eq!(state.waiting_session_count(), 0);
+    }
+
+    // -- NotificationResult --
+
+    #[test]
+    fn notification_result_stores_hook_channels() {
+        let mut state = AppState::default();
+        process_event(&mut state, make_simple_event(EventType::SessionStart));
+
+        let mut result_event = make_simple_event(EventType::NotificationResult);
+        result_event.notification_results = vec![
+            HookChannelResult {
+                channel: "ntfy".into(),
+                ok: true,
+                error: None,
+            },
+            HookChannelResult {
+                channel: "webhook".into(),
+                ok: false,
+                error: Some("timeout".into()),
+            },
+        ];
+        process_event(&mut state, result_event);
+
+        let results = state
+            .hook_notified_channels
+            .get("/home/user/test-project")
+            .unwrap();
+        assert_eq!(results.len(), 2);
+        assert!(results[0].ok);
+        assert!(!results[1].ok);
+    }
+
+    #[test]
+    fn status_change_clears_hook_channels() {
+        let mut state = AppState::default();
+        process_event(&mut state, make_simple_event(EventType::SessionStart));
+
+        let mut result_event = make_simple_event(EventType::NotificationResult);
+        result_event.notification_results = vec![HookChannelResult {
+            channel: "ntfy".into(),
+            ok: true,
+            error: None,
+        }];
+        process_event(&mut state, result_event);
+        assert!(state
+            .hook_notified_channels
+            .contains_key("/home/user/test-project"));
+
+        // Status change should clear hook results
+        process_event(
+            &mut state,
+            make_event(EventType::Notification, NotificationType::PermissionPrompt),
+        );
+        assert!(!state
+            .hook_notified_channels
+            .contains_key("/home/user/test-project"));
+    }
+
+    #[test]
+    fn session_end_clears_hook_channels() {
+        let mut state = AppState::default();
+        process_event(&mut state, make_simple_event(EventType::SessionStart));
+
+        let mut result_event = make_simple_event(EventType::NotificationResult);
+        result_event.notification_results = vec![HookChannelResult {
+            channel: "ntfy".into(),
+            ok: true,
+            error: None,
+        }];
+        process_event(&mut state, result_event);
+        assert!(state
+            .hook_notified_channels
+            .contains_key("/home/user/test-project"));
+
+        process_event(&mut state, make_simple_event(EventType::SessionEnd));
+        assert!(!state
+            .hook_notified_channels
+            .contains_key("/home/user/test-project"));
+    }
+
+    #[test]
+    fn session_start_clears_hook_channels() {
+        let mut state = AppState::default();
+
+        let mut result_event = make_simple_event(EventType::NotificationResult);
+        result_event.notification_results = vec![HookChannelResult {
+            channel: "ntfy".into(),
+            ok: true,
+            error: None,
+        }];
+        process_event(&mut state, result_event);
+
+        process_event(&mut state, make_simple_event(EventType::SessionStart));
+        assert!(!state
+            .hook_notified_channels
+            .contains_key("/home/user/test-project"));
     }
 }

@@ -1,11 +1,12 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod api_server;
 mod commands;
 mod constants;
-mod difit;
 mod events;
 mod git;
 mod menu;
+mod notification_pipeline;
 mod persist;
 mod settings;
 mod setup;
@@ -14,6 +15,7 @@ mod tmux;
 mod tray;
 
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
+use std::collections::HashMap;
 use std::fs;
 use std::sync::{Arc, Mutex};
 use tauri::{
@@ -23,22 +25,26 @@ use tauri::{
     Emitter, Manager, WebviewUrl, WebviewWindowBuilder,
 };
 
-use difit::DifitProcessRegistry;
+use eocc_core::notifications::{self, NotificationSink};
 use tauri_plugin_log::RotationStrategy;
 
 use commands::{
-    check_claude_settings, clear_all_sessions, get_always_on_top, get_dashboard_data,
-    get_repo_branches, get_repo_git_info, get_settings, get_setup_status, install_hook,
-    open_claude_settings, open_diff, open_tmux_viewer, remove_session, set_always_on_top,
+    check_claude_settings, clear_all_sessions, clear_notification_history, get_always_on_top,
+    get_dashboard_data, get_notification_history, get_notification_settings, get_repo_branches,
+    get_repo_git_info, get_settings, get_setup_status, install_hook, open_claude_settings,
+    open_tmux_viewer, remove_session, send_test_notification, set_always_on_top,
     set_opacity_active, set_opacity_inactive, set_window_size_for_setup, tmux_capture_pane,
     tmux_get_pane_size, tmux_is_available, tmux_list_panes, tmux_send_keys,
+    update_notification_settings,
 };
 use constants::{ICON_NORMAL, MINI_VIEW_HEIGHT, MINI_VIEW_WIDTH};
 use events::{apply_events_to_state, read_events_from_queue};
 use menu::{build_app_menu, build_tray_menu, parse_opacity_menu_id};
 use persist::{create_runtime_snapshot, load_runtime_state, save_runtime_snapshot};
-use settings::{get_app_log_dir, get_log_dir, load_settings, save_settings};
-use state::{AppState, ManagedState};
+use settings::{
+    get_app_log_dir, get_log_dir, load_notification_settings, load_settings, save_settings,
+};
+use state::{AppState, ManagedState, NotificationHistoryState, NotificationSinksState};
 use tray::{emit_state_update, update_tray_and_badge};
 
 fn show_dashboard(app: &tauri::AppHandle) {
@@ -81,7 +87,12 @@ fn create_dashboard_window(
     }
 }
 
-fn start_file_watcher(app_handle: tauri::AppHandle, state: Arc<Mutex<AppState>>) {
+fn start_file_watcher(
+    app_handle: tauri::AppHandle,
+    state: Arc<Mutex<AppState>>,
+    notification_sinks: Arc<Mutex<Vec<Box<dyn NotificationSink>>>>,
+    notification_history: Arc<Mutex<notifications::history::NotificationHistory>>,
+) {
     let log_dir = match get_log_dir(&app_handle) {
         Ok(dir) => dir,
         Err(e) => {
@@ -91,6 +102,8 @@ fn start_file_watcher(app_handle: tauri::AppHandle, state: Arc<Mutex<AppState>>)
     };
 
     std::thread::spawn(move || {
+        let mut last_notified = HashMap::new();
+
         if let Err(e) = fs::create_dir_all(&log_dir) {
             eprintln!("[eocc] Failed to create log directory: {:?}", e);
             return;
@@ -114,23 +127,33 @@ fn start_file_watcher(app_handle: tauri::AppHandle, state: Arc<Mutex<AppState>>)
         loop {
             match rx.recv() {
                 Ok(_event) => {
-                    // File I/O outside of lock - this is the main fix for IO blocking
                     let new_events = read_events_from_queue(&app_handle);
 
                     if !new_events.is_empty() {
-                        // Acquire lock only for state updates, then release immediately
-                        let snapshot = {
+                        let (snapshot, pipeline) = {
                             let Ok(mut state_guard) = state.lock() else {
                                 eprintln!("[eocc] Failed to acquire state lock in watcher");
                                 continue;
                             };
-                            apply_events_to_state(&mut state_guard, &new_events);
+
+                            let pipeline = notification_pipeline::apply_and_detect(
+                                &mut state_guard,
+                                &new_events,
+                                &notification_sinks,
+                            );
                             update_tray_and_badge(&app_handle, &state_guard);
                             emit_state_update(&app_handle, &state_guard);
-                            create_runtime_snapshot(&state_guard)
+
+                            (create_runtime_snapshot(&state_guard), pipeline)
                         };
-                        // File I/O outside of lock
+
                         save_runtime_snapshot(&app_handle, &snapshot);
+                        notification_pipeline::dispatch_notifications(
+                            &pipeline,
+                            &notification_sinks,
+                            &notification_history,
+                            &mut last_notified,
+                        );
                     }
                 }
                 Err(e) => {
@@ -142,13 +165,69 @@ fn start_file_watcher(app_handle: tauri::AppHandle, state: Arc<Mutex<AppState>>)
     });
 }
 
+/// Watch `~/.eocc/notification_settings.toml` for changes and hot-reload sinks.
+fn start_config_watcher(
+    state: Arc<Mutex<AppState>>,
+    sinks: Arc<Mutex<Vec<Box<dyn NotificationSink>>>>,
+) {
+    let config_path = match settings::get_notification_settings_file() {
+        Ok(p) => p,
+        Err(e) => {
+            log::warn!(target: "eocc.settings", "Cannot watch config file: {}", e);
+            return;
+        }
+    };
+
+    let watch_dir = match config_path.parent() {
+        Some(p) => p.to_path_buf(),
+        None => return,
+    };
+
+    std::thread::spawn(move || {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut watcher = match RecommendedWatcher::new(tx, Config::default()) {
+            Ok(w) => w,
+            Err(e) => {
+                log::warn!(target: "eocc.settings", "Cannot create config watcher: {:?}", e);
+                return;
+            }
+        };
+
+        if let Err(e) = watcher.watch(&watch_dir, RecursiveMode::NonRecursive) {
+            log::warn!(target: "eocc.settings", "Cannot watch config directory: {:?}", e);
+            return;
+        }
+
+        log::info!(target: "eocc.settings", "Watching {:?} for config changes", watch_dir);
+
+        while rx.recv().is_ok() {
+            if !config_path.exists() {
+                continue;
+            }
+            let new_settings = eocc_core::notifications::load_settings_from_file(&config_path);
+            let new_sinks = notifications::build_sinks(&new_settings.channels);
+            log::info!(
+                target: "eocc.settings",
+                "Config file changed - rebuilt {} sink(s), enabled={}",
+                new_sinks.len(),
+                new_settings.enabled
+            );
+
+            if let Ok(mut s) = sinks.lock() {
+                *s = new_sinks;
+            }
+            if let Ok(mut state_guard) = state.lock() {
+                state_guard.notification_settings = new_settings;
+            }
+        }
+    });
+}
+
 fn main() {
     let state = Arc::new(Mutex::new(AppState::default()));
-    let difit_registry = Arc::new(DifitProcessRegistry::new());
 
     let state_clone = Arc::clone(&state);
     let state_for_managed = Arc::clone(&state);
-    let difit_registry_clone = Arc::clone(&difit_registry);
 
     tauri::Builder::default()
         .plugin(
@@ -160,7 +239,6 @@ fn main() {
         )
         .plugin(tauri_plugin_shell::init())
         .manage(ManagedState(state_for_managed))
-        .manage(difit_registry_clone)
         .invoke_handler(tauri::generate_handler![
             get_dashboard_data,
             remove_session,
@@ -172,13 +250,18 @@ fn main() {
             set_opacity_inactive,
             get_repo_git_info,
             get_repo_branches,
-            open_diff,
             set_window_size_for_setup,
             // Setup commands
             get_setup_status,
             install_hook,
             check_claude_settings,
             open_claude_settings,
+            // Notification commands
+            get_notification_settings,
+            update_notification_settings,
+            send_test_notification,
+            get_notification_history,
+            clear_notification_history,
             // Tmux commands
             tmux_is_available,
             tmux_list_panes,
@@ -198,11 +281,23 @@ fn main() {
             }
 
             // Load settings and existing events
-            {
+            let notification_sinks = {
                 let mut state_guard = state_for_tray.lock().map_err(|_| {
                     tauri::Error::Anyhow(anyhow::anyhow!("Failed to acquire state lock"))
                 })?;
                 state_guard.settings = load_settings(&app_handle);
+                state_guard.notification_settings = load_notification_settings();
+
+                // Build notification sinks from config
+                let sinks = notifications::build_sinks(&state_guard.notification_settings.channels);
+                if state_guard.notification_settings.enabled && !sinks.is_empty() {
+                    log::info!(
+                        target: "eocc.notifications",
+                        "Loaded {} notification channel(s)",
+                        sinks.len()
+                    );
+                }
+
                 // Restore previous in-memory state snapshot (sessions/recent events/cached paths)
                 if let Some(restored) = load_runtime_state(&app_handle) {
                     state_guard.sessions = restored.sessions;
@@ -211,7 +306,16 @@ fn main() {
                     // Also set the cached tmux path in the tmux module
                     tmux::set_cached_tmux_path(&restored.cached_paths.tmux_path);
                 }
-            }
+
+                Arc::new(Mutex::new(sinks))
+            };
+
+            // Register notification sinks and history as managed state for commands
+            app.manage(NotificationSinksState(Arc::clone(&notification_sinks)));
+            let notification_history = Arc::new(Mutex::new(
+                notifications::history::NotificationHistory::default(),
+            ));
+            app.manage(NotificationHistoryState(Arc::clone(&notification_history)));
 
             // Drain any queued events written by the hook while app was not running
             // File I/O is done outside of lock
@@ -246,20 +350,12 @@ fn main() {
                 }
             }
 
-            // Hide dashboard and close all diff windows when close button is clicked
+            // Hide dashboard when close button is clicked
             let app_handle_for_close = app_handle.clone();
             dashboard_window.on_window_event(move |event| {
                 if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                     api.prevent_close();
 
-                    // Close all diff windows
-                    for (label, window) in app_handle_for_close.webview_windows() {
-                        if label.starts_with("difit-") {
-                            let _ = window.close();
-                        }
-                    }
-
-                    // Hide dashboard
                     if let Some(window) = app_handle_for_close.get_webview_window("dashboard") {
                         let _ = window.hide();
                     }
@@ -410,8 +506,48 @@ fn main() {
                 })
                 .build(app)?;
 
+            // Start config file watcher for notification settings hot-reload
+            start_config_watcher(Arc::clone(&state_clone), Arc::clone(&notification_sinks));
+
+            // Start API server if api_port is configured
+            {
+                let (api_port, api_token) = state_clone
+                    .lock()
+                    .ok()
+                    .map(|s| {
+                        (
+                            s.notification_settings.api_port,
+                            s.notification_settings.api_token.clone(),
+                        )
+                    })
+                    .unwrap_or((None, None));
+                if let Some(port) = api_port {
+                    if port >= 1024 {
+                        api_server::start_api_server(
+                            port,
+                            api_token,
+                            app.handle().clone(),
+                            Arc::clone(&state_clone),
+                            Arc::clone(&notification_sinks),
+                            Arc::clone(&notification_history),
+                        );
+                    } else {
+                        log::warn!(
+                            target: "eocc.api",
+                            "Ignoring api_port {} (must be >= 1024)",
+                            port
+                        );
+                    }
+                }
+            }
+
             // Start file watcher
-            start_file_watcher(app.handle().clone(), Arc::clone(&state_clone));
+            start_file_watcher(
+                app.handle().clone(),
+                Arc::clone(&state_clone),
+                notification_sinks,
+                notification_history,
+            );
 
             Ok(())
         })
@@ -422,20 +558,11 @@ fn main() {
                 let app = window.app_handle();
 
                 if label == "dashboard" {
-                    // Dashboard focus changed - emit event directly
                     let _ = app.emit_to("dashboard", "dashboard-active", *focused);
-                } else if label.starts_with("difit-") && *focused {
-                    // A difit window gained focus - dashboard should be inactive
-                    let _ = app.emit_to("dashboard", "dashboard-active", false);
                 }
             }
         })
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(move |_app_handle, event| {
-            if let tauri::RunEvent::Exit = event {
-                // Kill all difit processes on app exit
-                difit_registry.kill_all();
-            }
-        });
+        .run(|_app_handle, _event| {});
 }

@@ -3,9 +3,10 @@ import type { SessionInfo } from '@/types';
 interface HeaderProps {
   sessions: SessionInfo[];
   onRefresh: () => void;
+  onToggleNotifications?: () => void;
 }
 
-export const Header = ({ sessions, onRefresh }: HeaderProps) => {
+export const Header = ({ sessions, onRefresh, onToggleNotifications }: HeaderProps) => {
   const waitingCount = sessions.filter(
     (s) => s.status === 'WaitingPermission' || s.status === 'WaitingInput'
   ).length;
@@ -27,12 +28,23 @@ export const Header = ({ sessions, onRefresh }: HeaderProps) => {
       </div>
       <div className="flex justify-between items-center">
         <h2 className="font-semibold text-xs">Sessions</h2>
-        <button
-          onClick={onRefresh}
-          className="bg-bg-card border-none text-text-primary rounded-lg cursor-pointer transition-colors hover:bg-accent py-0.5 px-2 text-[0.625rem]"
-        >
-          Refresh
-        </button>
+        <div className="flex gap-1">
+          {onToggleNotifications && (
+            <button
+              onClick={onToggleNotifications}
+              className="bg-bg-card border-none text-text-primary rounded-lg cursor-pointer transition-colors hover:bg-accent py-0.5 px-2 text-[0.625rem]"
+              title="Notification settings"
+            >
+              Notify
+            </button>
+          )}
+          <button
+            onClick={onRefresh}
+            className="bg-bg-card border-none text-text-primary rounded-lg cursor-pointer transition-colors hover:bg-accent py-0.5 px-2 text-[0.625rem]"
+          >
+            Refresh
+          </button>
+        </div>
       </div>
     </header>
   );

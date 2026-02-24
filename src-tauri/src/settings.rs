@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use tauri::Manager;
 
 use crate::state::Settings;
+use eocc_core::notifications::NotificationSettings;
 
 /// Get the config directory using Tauri's path API
 pub fn get_config_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -55,6 +56,40 @@ pub fn load_settings(app: &tauri::AppHandle) -> Settings {
         }
     }
     Settings::default()
+}
+
+/// Get the EOCC home directory (~/.eocc)
+pub fn get_eocc_home() -> Result<PathBuf, String> {
+    let home = dirs::home_dir().ok_or("Failed to get home directory")?;
+    Ok(home.join(".eocc"))
+}
+
+pub fn get_notification_settings_file() -> Result<PathBuf, String> {
+    get_eocc_home().map(|dir| dir.join("notification_settings.toml"))
+}
+
+pub fn load_notification_settings() -> NotificationSettings {
+    let path = match get_notification_settings_file() {
+        Ok(p) => p,
+        Err(e) => {
+            log::error!(target: "eocc.settings", "Cannot determine notification settings path: {}", e);
+            return NotificationSettings::default();
+        }
+    };
+    eocc_core::notifications::load_settings_from_file(&path)
+}
+
+pub fn save_notification_settings(settings: &NotificationSettings) {
+    let path = match get_notification_settings_file() {
+        Ok(p) => p,
+        Err(e) => {
+            log::error!(target: "eocc.settings", "Cannot save notification settings: {}", e);
+            return;
+        }
+    };
+    if let Err(e) = eocc_core::notifications::save_settings_to_file(&path, settings) {
+        log::error!(target: "eocc.settings", "{}", e);
+    }
 }
 
 pub fn save_settings(app: &tauri::AppHandle, settings: &Settings) {

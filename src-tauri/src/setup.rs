@@ -59,8 +59,10 @@ pub fn get_init_error() -> Option<String> {
     guard.clone()
 }
 
-/// Embedded hook script content (relative to src-tauri/src)
+/// Embedded script content (relative to src-tauri/src)
 const HOOK_SCRIPT: &str = include_str!("../../eocc-hook");
+const LIB_SCRIPT: &str = include_str!("../../eocc-lib.cjs");
+const SERVER_SCRIPT: &str = include_str!("../../eocc-server");
 
 /// Generate hooks config with the correct hook script path
 fn generate_hooks_config(hook_script_path: &str) -> serde_json::Value {
@@ -154,46 +156,61 @@ pub fn install_hook_script(app: &tauri::AppHandle) -> Result<PathBuf, String> {
         .map_err(|e| format!("Failed to create app data directory: {:?}", e))?;
 
     let hook_path = app_data_dir.join("eocc-hook");
+    let lib_path = app_data_dir.join("eocc-lib.cjs");
+    let server_path = app_data_dir.join("eocc-server");
 
-    // Write the hook script atomically
+    // Write all scripts atomically
     atomic_write(&hook_path, HOOK_SCRIPT.as_bytes())?;
+    atomic_write(&lib_path, LIB_SCRIPT.as_bytes())?;
+    atomic_write(&server_path, SERVER_SCRIPT.as_bytes())?;
 
-    // Make it executable (Unix only)
+    // Make scripts executable (Unix only)
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(&hook_path)
-            .map_err(|e| format!("Failed to get hook permissions: {:?}", e))?
-            .permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&hook_path, perms)
-            .map_err(|e| format!("Failed to set hook permissions: {:?}", e))?;
+        for script_path in [&hook_path, &server_path] {
+            let mut perms = fs::metadata(script_path)
+                .map_err(|e| format!("Failed to get script permissions: {:?}", e))?
+                .permissions();
+            perms.set_mode(0o700);
+            fs::set_permissions(script_path, perms)
+                .map_err(|e| format!("Failed to set script permissions: {:?}", e))?;
+        }
     }
 
-    // Create symlink at ~/.local/bin/eocc-hook (avoids spaces in path)
+    // Create symlinks at ~/.local/bin/ (avoids spaces in path)
     #[cfg(unix)]
     {
-        let symlink_path = get_hook_symlink_path()?;
-        if let Some(parent) = symlink_path.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|e| format!("Failed to create symlink directory: {:?}", e))?;
-        }
-        // Check existing file before removing
-        if symlink_path.exists() {
-            let metadata = fs::symlink_metadata(&symlink_path)
-                .map_err(|e| format!("Failed to read symlink metadata: {:?}", e))?;
-            if metadata.file_type().is_symlink() {
-                fs::remove_file(&symlink_path)
-                    .map_err(|e| format!("Failed to remove existing symlink: {:?}", e))?;
-            } else {
-                return Err(format!(
-                    "Path {} exists and is not a symlink. Please remove it manually.",
-                    symlink_path.display()
-                ));
+        let symlink_dir = get_hook_symlink_path()?
+            .parent()
+            .ok_or("Failed to get symlink parent directory")?
+            .to_path_buf();
+        fs::create_dir_all(&symlink_dir)
+            .map_err(|e| format!("Failed to create symlink directory: {:?}", e))?;
+
+        let symlinks = [
+            (&hook_path, symlink_dir.join("eocc-hook")),
+            (&lib_path, symlink_dir.join("eocc-lib.cjs")),
+            (&server_path, symlink_dir.join("eocc-server")),
+        ];
+
+        for (target, symlink_path) in &symlinks {
+            if symlink_path.exists() {
+                let metadata = fs::symlink_metadata(symlink_path)
+                    .map_err(|e| format!("Failed to read symlink metadata: {:?}", e))?;
+                if metadata.file_type().is_symlink() {
+                    fs::remove_file(symlink_path)
+                        .map_err(|e| format!("Failed to remove existing symlink: {:?}", e))?;
+                } else {
+                    return Err(format!(
+                        "Path {} exists and is not a symlink. Please remove it manually.",
+                        symlink_path.display()
+                    ));
+                }
             }
+            std::os::unix::fs::symlink(target, symlink_path)
+                .map_err(|e| format!("Failed to create symlink: {:?}", e))?;
         }
-        std::os::unix::fs::symlink(&hook_path, &symlink_path)
-            .map_err(|e| format!("Failed to create symlink: {:?}", e))?;
     }
 
     Ok(hook_path)

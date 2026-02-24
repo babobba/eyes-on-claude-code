@@ -5,12 +5,15 @@
  * Usage: eocc-hook <event_type> [matcher]
  *
  * This script is called from ~/.claude/settings.json and logs events from all Claude Code sessions.
+ * It also dispatches notifications directly to configured channels (ntfy, webhook, pushover),
+ * making it work on remote machines and containers without the EOCC desktop app.
  */
 
 const fs = require("node:fs");
 const path = require("node:path");
 const os = require("node:os");
-const { execSync } = require("node:child_process");
+const { execSync, execFileSync } = require("node:child_process");
+const lib = require("./eocc-lib.cjs");
 
 function isoTimestampUtc() {
   return new Date().toISOString();
@@ -41,7 +44,21 @@ function getString(obj, key, fallback = "") {
 
 function whichCommand(cmd) {
   try {
-    return execSync(`which ${cmd}`, { encoding: "utf8", timeout: 5000 }).trim();
+    return execFileSync("which", [cmd], { encoding: "utf8", timeout: 5000 }).trim();
+  } catch {
+    return "";
+  }
+}
+
+// Resolve the tmux session name that owns a given pane ID (e.g. "%3").
+function resolveTmuxSession(paneId) {
+  if (!/^%\d+$/.test(paneId)) return "";
+  try {
+    return execFileSync(
+      "tmux",
+      ["display-message", "-p", "-t", paneId, "#{session_name}"],
+      { encoding: "utf8", timeout: 3000 }
+    ).trim();
   } catch {
     return "";
   }
@@ -76,6 +93,20 @@ async function main() {
   const projectName = basename(projectDir) || "unknown";
   const tmuxPane = process.env.TMUX_PANE || "";
 
+  // Resolve tmux session name from the pane ID so connect URLs can include
+  // `tmux attach -t <session>`, landing the user in the right session.
+  const tmuxSession = tmuxPane ? resolveTmuxSession(tmuxPane) : "";
+
+  // Detect network transport for remote sessions
+  const sshConnection = process.env.SSH_CONNECTION || "";
+  const sshParts = sshConnection ? sshConnection.split(" ") : [];
+  const transportType = process.env.EOCC_TRANSPORT || (sshConnection ? "ssh" : "local");
+  const transportHost =
+    process.env.EOCC_TRANSPORT_HOST || (sshParts.length >= 3 ? sshParts[2] : "");
+  const transportPort =
+    process.env.EOCC_TRANSPORT_PORT || (sshParts.length >= 4 ? sshParts[3] : "22");
+  const transportUser = process.env.EOCC_TRANSPORT_USER || process.env.USER || "";
+
   const sessionId = getString(rawInput, "session_id", "unknown");
   const message = getString(rawInput, "message", "");
   let notificationType = getString(rawInput, "notification_type", "");
@@ -96,7 +127,7 @@ async function main() {
     tmuxPath = whichCommand("tmux");
   }
 
-  const payload = {
+  const eventPayload = {
     timestamp,
     event: eventType,
     matcher,
@@ -111,9 +142,145 @@ async function main() {
     tmux_path: tmuxPath,
   };
 
-  const payloadJson = JSON.stringify(payload);
+  // Webhook payload includes transport info so the desktop app knows how to
+  // connect back to remote sessions. The local JSONL doesn't need it.
+  const webhookUrl = process.env.EOCC_WEBHOOK_URL;
+  if (webhookUrl) {
+    const webhookPayload = {
+      ...eventPayload,
+      transport_type: transportType,
+      transport_host: transportHost,
+      transport_port: transportPort,
+      transport_user: transportUser,
+      tmux_session: tmuxSession,
+    };
+    postWebhook(webhookUrl, JSON.stringify(webhookPayload));
+  }
 
-  appendLine(logFile, payloadJson);
+  appendLine(logFile, JSON.stringify(eventPayload));
+
+  // Only dispatch notifications for events that can produce notification-worthy
+  // transitions. post_tool_use and user_prompt_submit fire very frequently (every
+  // tool call / user message) and almost always map to "active" which is rarely
+  // in notify_on. Skipping them avoids reading TOML + JSON on every tool call.
+  const NOTIFY_EVENTS = new Set(["notification", "stop", "session_start", "session_end"]);
+  if (NOTIFY_EVENTS.has(eventType)) {
+    const waitingInfo = message || toolName;
+    const transport = {
+      type: transportType,
+      host: transportHost,
+      port: transportPort,
+      user: transportUser,
+      tmux_session: tmuxSession,
+      tmux_pane: tmuxPane,
+      viewer_url: process.env.EOCC_VIEWER_URL || "",
+    };
+    await tryDispatchNotification(home, eventType, notificationType, projectDir, projectName, waitingInfo, transport);
+  }
+}
+
+function postWebhook(url, body) {
+  try {
+    const parsedUrl = new URL(url);
+    const mod = parsedUrl.protocol === "https:" ? require("node:https") : require("node:http");
+    const options = {
+      hostname: parsedUrl.hostname,
+      port: parsedUrl.port || (parsedUrl.protocol === "https:" ? 443 : 80),
+      path: parsedUrl.pathname + parsedUrl.search,
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Content-Length": Buffer.byteLength(body),
+      },
+      timeout: 5000,
+    };
+    const req = mod.request(options, () => {});
+    req.on("error", () => {});
+    req.on("timeout", () => req.destroy());
+    req.write(body);
+    req.end();
+  } catch {
+    // Best-effort: never fail the hook call
+  }
+}
+
+async function tryDispatchNotification(home, eventType, notificationType, projectDir, projectName, waitingInfo, transport) {
+  try {
+    const settingsFile = path.join(home, ".eocc", "notification_settings.toml");
+    const stateFile = path.join(home, ".eocc", "hook_state.json");
+
+    const settings = lib.parseNotificationSettings(settingsFile);
+    if (!settings || !settings.enabled) return;
+    if (!settings.channels || settings.channels.length === 0) return;
+
+    const newStatus = lib.mapEventToStatus(eventType, notificationType);
+    if (newStatus === undefined) return;
+
+    const sessionKey = projectDir || projectName;
+    const hookState = lib.loadHookState(stateFile);
+
+    if (newStatus === null) {
+      delete hookState.sessions[sessionKey];
+      lib.saveHookState(stateFile, hookState);
+      return;
+    }
+
+    const prev = hookState.sessions[sessionKey];
+    const oldStatus = prev ? prev.status : null;
+
+    // Update stored status
+    hookState.sessions[sessionKey] = {
+      status: newStatus,
+      last_notified: prev ? prev.last_notified : null,
+    };
+
+    if (oldStatus === newStatus) {
+      lib.saveHookState(stateFile, hookState);
+      return;
+    }
+
+    const { enabled, notifyOn } = lib.resolveForProject(settings, projectDir);
+    if (!enabled || !notifyOn.includes(newStatus)) {
+      lib.saveHookState(stateFile, hookState);
+      return;
+    }
+
+    if (settings.cooldown_seconds && prev && prev.last_notified) {
+      const elapsed = (Date.now() - prev.last_notified) / 1000;
+      if (elapsed < settings.cooldown_seconds) {
+        lib.saveHookState(stateFile, hookState);
+        return;
+      }
+    }
+
+    const notification = lib.buildNotification(settings, projectName, projectDir, newStatus, waitingInfo, transport);
+    const channelResults = await lib.dispatchToChannels(settings, notification);
+
+    // Write notification results so the desktop app can skip already-handled channels
+    const logDir = path.join(home, ".eocc", "logs");
+    const logFile = path.join(logDir, "events.jsonl");
+    const resultPayload = {
+      timestamp: new Date().toISOString(),
+      event: "notification_result",
+      matcher: "",
+      project_name: projectName,
+      project_dir: projectDir,
+      session_id: "",
+      message: "",
+      notification_type: "",
+      tool_name: "",
+      tmux_pane: "",
+      npx_path: "",
+      tmux_path: "",
+      notification_results: channelResults,
+    };
+    appendLine(logFile, JSON.stringify(resultPayload));
+
+    hookState.sessions[sessionKey].last_notified = Date.now();
+    lib.saveHookState(stateFile, hookState);
+  } catch {
+    // Never fail the hook call
+  }
 }
 
 main().catch(() => {
