@@ -101,3 +101,21 @@ This eliminates the race condition entirely — the desktop sees the status chan
 **Separate coordination file:** An alternative to multiplexing into `events.jsonl` is a dedicated `~/.eocc/notification_state.json` (similar to `hook_state.json`) that the desktop reads before dispatching. This keeps `events.jsonl` as a pure session-state stream without notification metadata polluting every `EventInfo`. The desktop checks the file synchronously — no new event types, no extra struct fields.
 
 **Takeaway:** When two processes need to avoid duplicating work, prefer static partitioning (configuration-time decision) over runtime coordination (protocol between processes). Runtime coordination adds types, state, clearing logic, and race windows. Static partitioning adds one config field and a filter in each process's startup path.
+
+## Hook language choice: Node.js vs. Rust
+
+**Problem:** The `eocc-hook` is a Node.js CommonJS script that duplicates logic already present in the Rust `eocc-core` crate: TOML parsing, session status mapping, transition detection, notification dispatch, pattern matching, and cooldown enforcement. Every new feature (notification channels, filtering rules, project rules) must be implemented twice and kept in sync across languages.
+
+**Why Node.js was chosen:** Claude Code guarantees `node` is available wherever it runs, so the hook has zero installation dependencies beyond copying a single script file. No compilation step, no platform-specific binaries, no runtime to install.
+
+**Why Rust would have been better:** If the hook were a small Rust binary in the same Cargo workspace, it would import `eocc-core` directly — sharing types (`SessionStatus`, `EventType`, `Settings`), logic (`upsert_session`, transition detection), and the real `toml` crate instead of a hand-rolled subset parser. The entire "dual notification paths" problem and deduplication complexity would not exist — there would be one codebase with two entry points (desktop app and hook binary).
+
+**What this would require:**
+- A new binary target in the Cargo workspace (e.g., `src-tauri/src/bin/eocc-hook.rs`)
+- Cross-compilation for each target platform — but the release CI already builds for macOS (aarch64), Linux (x64), and Windows (x64)
+- Distribution of the hook binary alongside the desktop app in release artifacts
+- Users on headless servers would need the compiled binary rather than just copying a script
+
+**Tradeoff:** The Node.js approach optimizes for zero-friction installation (copy one file, it runs everywhere `node` exists). The Rust approach optimizes for correctness and maintainability (single source of truth, no logic duplication, no cross-language sync). For a project that already has a Rust workspace with a pure-logic crate, the maintenance cost of a second implementation in a different language compounds over time and outweighs the installation convenience.
+
+**Takeaway:** When you have a workspace with a shared logic crate, write companion tools in the same language. A second implementation in a different language creates a maintenance boundary that grows with every feature. The installation convenience of a scripting language is real but finite; the maintenance cost of duplicated logic is ongoing.
