@@ -87,7 +87,7 @@ pub fn dispatch_notifications(
 
         let hook_results = pipeline.hook_notified.get(&notification.session_id);
 
-        let filtered_sinks: Vec<&Box<dyn NotificationSink>> = sinks
+        let filtered_sinks: Vec<&dyn NotificationSink> = sinks
             .iter()
             .filter(|sink| {
                 let Some(results) = hook_results else {
@@ -95,6 +95,7 @@ pub fn dispatch_notifications(
                 };
                 !results.iter().any(|r| r.ok && r.channel == sink.name())
             })
+            .map(|s| s.as_ref())
             .collect();
 
         if filtered_sinks.is_empty() {

@@ -377,13 +377,13 @@ pub fn dispatch(
     sinks: &[Box<dyn NotificationSink>],
     notification: &SessionNotification,
 ) -> history::NotificationRecord {
-    let refs: Vec<&Box<dyn NotificationSink>> = sinks.iter().collect();
+    let refs: Vec<&dyn NotificationSink> = sinks.iter().map(|s| s.as_ref()).collect();
     dispatch_to_sinks(&refs, notification)
 }
 
 /// Send a notification to a filtered set of sinks. Returns a history record.
 pub fn dispatch_to_sinks(
-    sinks: &[&Box<dyn NotificationSink>],
+    sinks: &[&dyn NotificationSink],
     notification: &SessionNotification,
 ) -> history::NotificationRecord {
     let mut channel_results = Vec::new();

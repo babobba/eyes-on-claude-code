@@ -22,6 +22,10 @@ notify-rust = { version = "4", optional = true }
 env_logger = { version = "0.11", optional = true }
 
 [[bin]]
+name = "eocc-hook"
+required-features = ["headless"]
+
+[[bin]]
 name = "eocc-watcher"
 required-features = ["headless"]
 
