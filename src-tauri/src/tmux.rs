@@ -284,10 +284,6 @@ pub fn list_panes_with_transport(transport: &Transport) -> Result<Vec<TmuxPane>,
     Ok(panes)
 }
 
-pub fn capture_pane(pane_id: &str) -> Result<String, String> {
-    capture_pane_with_transport(pane_id, &Transport::Local {})
-}
-
 pub fn capture_pane_with_transport(pane_id: &str, transport: &Transport) -> Result<String, String> {
     validate_pane_id(pane_id)?;
     run_tmux_with_transport(
@@ -306,10 +302,6 @@ pub fn capture_pane_with_transport(pane_id: &str, transport: &Transport) -> Resu
     )
 }
 
-pub fn send_keys(pane_id: &str, keys: &str) -> Result<(), String> {
-    send_keys_with_transport(pane_id, keys, &Transport::Local {})
-}
-
 pub fn send_keys_with_transport(
     pane_id: &str,
     keys: &str,
@@ -321,10 +313,6 @@ pub fn send_keys_with_transport(
     log::debug!(target: "eocc.tmux", "send_keys result: {:?}", result);
     result?;
     Ok(())
-}
-
-pub fn get_pane_size(pane_id: &str) -> Result<TmuxPaneSize, String> {
-    get_pane_size_with_transport(pane_id, &Transport::Local {})
 }
 
 pub fn get_pane_size_with_transport(
