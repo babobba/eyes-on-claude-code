@@ -145,6 +145,13 @@ function buildMockScript(data) {
         };
         if (cmd === 'get_notification_history') return [];
 
+        // Tmux commands
+        if (cmd === 'tmux_capture_pane') return data.tmuxContent || '(no content)';
+        if (cmd === 'tmux_get_pane_size') return data.tmuxPaneSize || { width: 80, height: 24 };
+        if (cmd === 'tmux_is_available') return true;
+        if (cmd === 'tmux_list_panes') return [];
+        if (cmd === 'tmux_send_keys') return null;
+
         // Event listener registration — return an ID so listen() resolves
         if (cmd === 'plugin:event|listen') return data._nextEventId++;
 
@@ -340,6 +347,126 @@ async function takeScreenshots() {
         omitBackground: true,
       });
       console.log('  ✓ waiting-sessions.png');
+      await ctx.close();
+    }
+
+    // ---- 5. Dashboard with Tailscale session (expanded) ----
+    {
+      const tailscaleSessions = [
+        {
+          project_name: 'infra-config',
+          project_dir: '/home/deploy/infra-config',
+          status: 'Active',
+          last_event: minutesAgo(1),
+          waiting_for: '',
+          tmux_pane: '%3',
+          transport: { type: 'tailscale', host: 'devbox-01', user: 'deploy' },
+        },
+        {
+          project_name: 'ml-training',
+          project_dir: '/home/deploy/ml-training',
+          status: 'WaitingPermission',
+          last_event: minutesAgo(0),
+          waiting_for: 'Bash: ./train.sh --gpu',
+          tmux_pane: '%4',
+          transport: { type: 'tailscale', host: 'gpu-server', user: 'deploy' },
+        },
+        MOCK_SESSIONS[0], // local session for contrast
+      ];
+
+      const mockData = {
+        dashboardData: { sessions: tailscaleSessions, events: [] },
+        settings: MOCK_SETTINGS,
+        setupStatus: MOCK_SETUP_STATUS,
+        gitInfo: {
+          ...MOCK_GIT_INFO,
+          branch: 'main',
+          has_unstaged_changes: false,
+          latest_commit_hash: 'b8e1d4f',
+        },
+        _nextEventId: 500,
+      };
+
+      const ctx = await browser.newContext({
+        viewport: { width: 400, height: 560 },
+        deviceScaleFactor: 2,
+        colorScheme: 'dark',
+      });
+      const page = await ctx.newPage();
+      await page.addInitScript({ content: buildMockScript(mockData) });
+      await page.goto(vite.url, { waitUntil: 'networkidle' });
+      await page.waitForTimeout(500);
+
+      // Expand the first (tailscale) session to show git info + tmux
+      const firstCard = page.locator('.bg-bg-secondary').first();
+      await firstCard.click();
+      await page.waitForTimeout(600);
+
+      await page.screenshot({
+        path: resolve(SCREENSHOTS_DIR, 'tailscale-session.png'),
+        omitBackground: true,
+      });
+      console.log('  ✓ tailscale-session.png');
+      await ctx.close();
+    }
+
+    // ---- 6. Tmux viewer (terminal output) ----
+    {
+      const MOCK_TERMINAL_OUTPUT = [
+        '\x1b[32mdeploy@devbox-01\x1b[0m:\x1b[34m~/infra-config\x1b[0m$ claude',
+        '',
+        '\x1b[1m\u256d\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256e\x1b[0m',
+        '\x1b[1m\u2502\x1b[0m  \x1b[36mClaude Code\x1b[0m                                \x1b[1m\u2502\x1b[0m',
+        '\x1b[1m\u2570\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256f\x1b[0m',
+        '',
+        '\x1b[33m>\x1b[0m Refactoring the Terraform modules to use for_each',
+        '  instead of count for the AWS security groups...',
+        '',
+        '\x1b[90m  modules/security-groups/main.tf\x1b[0m',
+        '\x1b[32m  + resource "aws_security_group" "this" {\x1b[0m',
+        '\x1b[32m  +   for_each = var.security_groups\x1b[0m',
+        '\x1b[32m  +   name     = each.value.name\x1b[0m',
+        '\x1b[32m  +   vpc_id   = var.vpc_id\x1b[0m',
+        '\x1b[32m  + }\x1b[0m',
+        '',
+        '\x1b[31m  - resource "aws_security_group" "this" {\x1b[0m',
+        '\x1b[31m  -   count  = length(var.security_groups)\x1b[0m',
+        '\x1b[31m  -   name   = var.security_groups[count.index].name\x1b[0m',
+        '\x1b[31m  -   vpc_id = var.vpc_id\x1b[0m',
+        '\x1b[31m  - }\x1b[0m',
+        '',
+        '\x1b[36m\u23f3 Waiting for permission to run:\x1b[0m',
+        '\x1b[1m   terraform plan -out=tfplan\x1b[0m',
+        '',
+      ].join('\n');
+
+      const mockData = {
+        dashboardData: MOCK_DASHBOARD_DATA,
+        settings: MOCK_SETTINGS,
+        setupStatus: MOCK_SETUP_STATUS,
+        gitInfo: MOCK_GIT_INFO,
+        tmuxContent: MOCK_TERMINAL_OUTPUT,
+        tmuxPaneSize: { width: 80, height: 40 },
+        _nextEventId: 600,
+      };
+
+      const ctx = await browser.newContext({
+        viewport: { width: 700, height: 500 },
+        deviceScaleFactor: 2,
+        colorScheme: 'dark',
+      });
+      const page = await ctx.newPage();
+      await page.addInitScript({ content: buildMockScript(mockData) });
+      await page.goto(`${vite.url}?tmux_pane=%253&project_dir=/home/deploy/infra-config`, {
+        waitUntil: 'networkidle',
+      });
+      await page.waitForTimeout(800);
+
+      await page.screenshot({
+        path: resolve(SCREENSHOTS_DIR, 'tmux-viewer.png'),
+        omitBackground: true,
+      });
+      console.log('  ✓ tmux-viewer.png');
       await ctx.close();
     }
 

@@ -111,3 +111,29 @@ This eliminates the race condition entirely — the desktop sees the status chan
 - The `eocc-server` (web dashboard) remains Node.js since it has no shared logic with the core
 
 **Takeaway:** When you have a workspace with a shared logic crate, write companion tools in the same language. A second implementation in a different language creates a maintenance boundary that grows with every feature. The installation convenience of a scripting language is real but finite; the maintenance cost of duplicated logic is ongoing.
+
+## Generating screenshots without the Tauri backend
+
+**Problem:** The app is a Tauri v2 desktop application. The React frontend is tightly coupled to the Rust backend — every data fetch goes through `@tauri-apps/api/core`'s `invoke()`, and event listeners use `@tauri-apps/api/event`'s `listen()`. Both ultimately call `window.__TAURI_INTERNALS__.invoke(cmd, args)`. Running the full Tauri app requires GTK, WebKit, and a display server. Even with `xvfb`, the Rust backend would need to be compiled and running, and the UI would show real (empty) state rather than representative sample data.
+
+**Decision:** Use Playwright with the Vite dev server (frontend only) and inject a mock `window.__TAURI_INTERNALS__` object via `page.addInitScript()` before the page loads. The mock handles all `invoke` commands the app issues on startup and returns realistic mock data — sessions in various states, git info, settings, and tmux pane content.
+
+**Key mock surface:**
+- `window.__TAURI_INTERNALS__.invoke(cmd, args)` — a single async function that switches on `cmd` to return the right mock data for app commands (`get_dashboard_data`, `get_settings`, `get_setup_status`, `get_repo_git_info`), tmux commands (`tmux_capture_pane`, `tmux_get_pane_size`), event registration (`plugin:event|listen`), and window plugin commands (`plugin:window|is_focused`, `plugin:window|scale_factor`, etc.)
+- `window.__TAURI_INTERNALS__.transformCallback(cb)` — returns an incrementing ID (needed by `listen()` internals)
+- `window.__TAURI_INTERNALS__.metadata` — provides `currentWindow.label` and `currentWebview.label` so the Tauri window API can construct its objects
+
+**What this enables:**
+- Screenshots with fully controlled mock data — multiple sessions, different statuses, transport types (local, SSH, Tailscale), expanded cards with git info
+- TmuxViewer screenshots with ANSI-colored terminal output
+- 2x device scale factor for retina-quality images
+- Transparent backgrounds (`omitBackground: true`) for compositing in docs
+- No compilation or system library requirements beyond Node.js and Playwright
+
+**Script:** `scripts/take-screenshots.mjs` — run with `xvfb-run node scripts/take-screenshots.mjs` (headless) or `node scripts/take-screenshots.mjs --headed` (visible browser). Outputs to `screenshots/`.
+
+**Gotcha — Playwright import:** In environments where Playwright is installed globally (e.g., `/opt/node22/lib/node_modules/playwright`), the project's `node_modules` won't resolve it. The script uses a dynamic `await import()` with an absolute path. When adding Playwright as a devDependency, switch to a normal `import { chromium } from 'playwright'`.
+
+**Gotcha — TmuxViewer URL params:** The TmuxViewer renders when the URL contains `?tmux_pane=%X`. Since `%` is a URL-special character, the pane ID must be double-encoded (`%253` → decodes to `%3`) when passed in Playwright's `page.goto()`.
+
+**Takeaway:** For Tauri apps, the entire browser-facing API surface is a single function (`window.__TAURI_INTERNALS__.invoke`). Mocking this one entry point lets you render the full React frontend with arbitrary data — useful for screenshots, visual regression tests, and Storybook-style component previews without needing the Rust backend.
