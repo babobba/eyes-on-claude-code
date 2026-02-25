@@ -189,7 +189,7 @@ pnpm tauri dev
 
 ```
 ~/.local/bin/
-  └── eocc-hook              # Hook script (symlink created by the app)
+  └── eocc-hook              # Hook binary (symlink created by the app)
 
 ~/.claude/
   └── settings.json          # Global Hooks settings
@@ -212,7 +212,7 @@ pnpm tauri dev
 
 ### Monitoring events (Hook)
 
-The hook script appends events to `events.jsonl`.
+The hook binary appends events to `events.jsonl`.
 
 | event | Usage | Reflected into session state |
 |---|---|---|

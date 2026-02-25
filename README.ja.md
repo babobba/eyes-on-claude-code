@@ -191,7 +191,7 @@ pnpm tauri dev
 
 ```
 ~/.local/bin/
-  └── eocc-hook              # Hookスクリプト（アプリが作るシンボリックリンク）
+  └── eocc-hook              # Hookバイナリ（アプリが作るシンボリックリンク）
 
 ~/.claude/
   └── settings.json          # グローバルHooks設定

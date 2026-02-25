@@ -2,8 +2,6 @@ dist
 src-tauri
 node_modules
 pnpm-lock.yaml
-eocc-hook
-eocc-lib.cjs
 eocc-server
 *.md
 .claude

@@ -4,46 +4,58 @@ The headless server components run without a GUI and are designed for remote mac
 
 ## Components
 
-| File | Size | Purpose |
-|------|------|---------|
-| `eocc-hook` | ~9 KB | Claude Code hook script. Logs events and dispatches notifications. |
-| `eocc-server` | ~20 KB | HTTP dashboard and tmux web viewer. |
-| `eocc-lib.cjs` | ~14 KB | Shared library (TOML parsing, notification dispatch, HTTP helpers). |
+| File | Purpose |
+|------|---------|
+| `eocc-hook` | Compiled Rust binary. Logs events and dispatches notifications. |
+| `eocc-server` | Node.js HTTP dashboard and tmux web viewer. |
 
-**Total: ~42 KB**. No `npm install` required.
+No npm dependencies required for `eocc-hook` (standalone binary). `eocc-server` uses only Node.js built-in modules.
 
 ## Prerequisites
 
 | Requirement | Purpose |
 |-------------|---------|
-| Node.js 18+ | Runtime for hook and server scripts |
+| Node.js 18+ | Runtime for `eocc-server` only |
 | tmux (optional) | Required for tmux viewer and pane interaction |
 | ttyd (optional) | Full terminal experience in the web viewer |
 
-All three scripts use only Node.js built-in modules (`fs`, `path`, `os`, `http`, `https`, `child_process`). There are no npm dependencies.
+The `eocc-hook` binary has **no runtime dependencies** — it is a statically-linked Rust binary.
 
 ## Installation
 
-### Option 1: Copy scripts manually
+### Option 1: Download pre-built binary
+
+Download `eocc-hook` for your platform from the [GitHub releases](https://github.com/joe-re/eyes-on-claude-code/releases) page.
 
 ```bash
-# Copy the three files to your server
-scp eocc-hook eocc-server eocc-lib.cjs user@server:~/.local/bin/
+# Copy the binary and server script to your server
+scp eocc-hook eocc-server user@server:~/.local/bin/
 
-# Make the scripts executable
+# Make them executable
 ssh user@server 'chmod +x ~/.local/bin/eocc-hook ~/.local/bin/eocc-server'
 ```
 
-### Option 2: Clone and symlink
+### Option 2: Build from source
 
 ```bash
 git clone https://github.com/joe-re/eyes-on-claude-code.git ~/eocc
-ln -s ~/eocc/eocc-hook ~/.local/bin/eocc-hook
+cd ~/eocc
+
+# Build the hook binary
+cargo build --release -p eocc-core --bin eocc-hook --features headless
+
+# Install
+cp target/release/eocc-hook ~/.local/bin/eocc-hook
 ln -s ~/eocc/eocc-server ~/.local/bin/eocc-server
-ln -s ~/eocc/eocc-lib.cjs ~/.local/bin/eocc-lib.cjs
+chmod +x ~/.local/bin/eocc-hook ~/.local/bin/eocc-server
 ```
 
-**Important**: `eocc-hook` requires `eocc-lib.cjs` to be in the same directory (it uses `require("./eocc-lib.cjs")`).
+### Option 3: cargo install
+
+```bash
+cargo install --git https://github.com/joe-re/eyes-on-claude-code \
+  --features headless eocc-hook
+```
 
 ## Hook setup
 
@@ -119,7 +131,7 @@ systemctl --user enable --now eocc-server
 
 ## Hook environment variables
 
-The hook script reads these environment variables set by Claude Code or the user:
+The hook binary reads these environment variables set by Claude Code or the user:
 
 | Variable | Set by | Purpose |
 |----------|--------|---------|
@@ -135,4 +147,4 @@ The hook script reads these environment variables set by Claude Code or the user
 
 ## Notifications without the desktop app
 
-The hook script dispatches notifications directly to configured channels (ntfy, webhook, Pushover) without needing the desktop app. See [configuration.md](configuration.md) for notification channel setup.
+The hook binary dispatches notifications directly to configured channels (ntfy, webhook, Pushover) without needing the desktop app. See [configuration.md](configuration.md) for notification channel setup.

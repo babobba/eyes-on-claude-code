@@ -59,9 +59,13 @@ pub fn get_init_error() -> Option<String> {
     guard.clone()
 }
 
-/// Embedded script content (relative to src-tauri/src)
-const HOOK_SCRIPT: &str = include_str!("../../eocc-hook");
-const LIB_SCRIPT: &str = include_str!("../../eocc-lib.cjs");
+/// Embedded eocc-hook binary (compiled from eocc-core crate by build.rs)
+#[cfg(target_os = "windows")]
+const HOOK_BINARY: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/eocc-hook.exe"));
+#[cfg(not(target_os = "windows"))]
+const HOOK_BINARY: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/eocc-hook"));
+
+/// Embedded eocc-server script (Node.js, still used for headless web dashboard)
 const SERVER_SCRIPT: &str = include_str!("../../eocc-server");
 
 /// Generate hooks config with the correct hook script path
@@ -156,25 +160,27 @@ pub fn install_hook_script(app: &tauri::AppHandle) -> Result<PathBuf, String> {
         .map_err(|e| format!("Failed to create app data directory: {:?}", e))?;
 
     let hook_path = app_data_dir.join("eocc-hook");
-    let lib_path = app_data_dir.join("eocc-lib.cjs");
     let server_path = app_data_dir.join("eocc-server");
 
-    // Write all scripts atomically
-    atomic_write(&hook_path, HOOK_SCRIPT.as_bytes())?;
-    atomic_write(&lib_path, LIB_SCRIPT.as_bytes())?;
+    // Write hook binary and server script atomically
+    atomic_write(&hook_path, HOOK_BINARY)?;
     atomic_write(&server_path, SERVER_SCRIPT.as_bytes())?;
 
-    // Make scripts executable (Unix only)
+    // Clean up legacy eocc-lib.cjs (no longer needed by the Rust hook binary)
+    let legacy_lib = app_data_dir.join("eocc-lib.cjs");
+    let _ = fs::remove_file(&legacy_lib);
+
+    // Make files executable (Unix only)
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        for script_path in [&hook_path, &server_path] {
-            let mut perms = fs::metadata(script_path)
-                .map_err(|e| format!("Failed to get script permissions: {:?}", e))?
+        for path in [&hook_path, &server_path] {
+            let mut perms = fs::metadata(path)
+                .map_err(|e| format!("Failed to get file permissions: {:?}", e))?
                 .permissions();
             perms.set_mode(0o700);
-            fs::set_permissions(script_path, perms)
-                .map_err(|e| format!("Failed to set script permissions: {:?}", e))?;
+            fs::set_permissions(path, perms)
+                .map_err(|e| format!("Failed to set file permissions: {:?}", e))?;
         }
     }
 
@@ -188,9 +194,18 @@ pub fn install_hook_script(app: &tauri::AppHandle) -> Result<PathBuf, String> {
         fs::create_dir_all(&symlink_dir)
             .map_err(|e| format!("Failed to create symlink directory: {:?}", e))?;
 
+        // Clean up legacy eocc-lib.cjs symlink
+        let legacy_lib_symlink = symlink_dir.join("eocc-lib.cjs");
+        if legacy_lib_symlink
+            .symlink_metadata()
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false)
+        {
+            let _ = fs::remove_file(&legacy_lib_symlink);
+        }
+
         let symlinks = [
             (&hook_path, symlink_dir.join("eocc-hook")),
-            (&lib_path, symlink_dir.join("eocc-lib.cjs")),
             (&server_path, symlink_dir.join("eocc-server")),
         ];
 

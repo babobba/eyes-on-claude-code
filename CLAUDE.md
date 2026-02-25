@@ -61,7 +61,7 @@ This is a **Tauri v2** app with a React + TypeScript frontend and a Rust backend
 │   ├── Cargo.toml          # Rust dependencies
 │   ├── tauri.conf.json     # Tauri configuration
 │   └── icons/              # App icons for all platforms
-├── eocc-hook               # Node.js hook script (installed to ~/.local/bin/eocc-hook)
+├── eocc-server             # Node.js headless web dashboard and tmux viewer
 ├── scripts/
 │   ├── audit-licenses.mjs  # License compatibility audit script
 │   ├── generate-icons.sh   # Icon generation helper
@@ -80,7 +80,7 @@ This is a **Tauri v2** app with a React + TypeScript frontend and a Rust backend
 ### Data flow
 
 1. Claude Code triggers hooks defined in `~/.claude/settings.json`
-2. The `eocc-hook` Node.js script appends events as JSON lines to `~/.eocc/logs/events.jsonl`
+2. The `eocc-hook` Rust binary appends events as JSON lines to `~/.eocc/logs/events.jsonl`
 3. The Rust backend watches `events.jsonl` via the `notify` crate file watcher
 4. Events are atomically renamed to a processing file, parsed, and applied to `AppState`
 5. State changes are emitted to the frontend via Tauri events (`state-updated`)
@@ -181,8 +181,8 @@ pnpm licenses:audit
 ### General
 
 - ESLint ignores `dist` and `src-tauri` directories
-- Prettier ignores `dist`, `src-tauri`, `node_modules`, `pnpm-lock.yaml`, `eocc-hook`, `*.md`, and `.claude`
-- The `eocc-hook` script uses CommonJS (`require`) since it runs standalone via Node.js
+- Prettier ignores `dist`, `src-tauri`, `node_modules`, `pnpm-lock.yaml`, `eocc-server`, `*.md`, and `.claude`
+- The `eocc-hook` binary is compiled from `src-tauri/crates/eocc-core/src/bin/eocc-hook.rs` (Rust, `headless` feature)
 
 ## CI/CD
 

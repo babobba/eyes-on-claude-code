@@ -6,7 +6,7 @@ Architectural decisions and insights captured during development.
 
 **Problem:** The original architecture required the EOCC desktop app (Tauri) to be running locally to dispatch notifications. The hook wrote events to `~/.eocc/logs/events.jsonl`, and the Tauri app's file watcher read that file, detected status transitions, and dispatched to notification channels (ntfy, webhook, pushover). This meant that when Claude Code runs on a remote server or inside a container, notifications could not fire — the events file lives on the remote machine, but the desktop app (and its notification pipeline) runs on the local machine with a display.
 
-**Insight:** The hook itself runs wherever Claude Code runs. It already has all the event information at the moment it fires. There is no reason it cannot read `~/.eocc/notification_settings.toml` and dispatch notifications directly to HTTP-based channels (ntfy, webhook, pushover). The hook does not need the Tauri runtime, Rust notification sinks, or a display server — it just needs Node.js built-in `http`/`https` modules to make fire-and-forget POST requests.
+**Insight:** The hook itself runs wherever Claude Code runs. It already has all the event information at the moment it fires. There is no reason it cannot read `~/.eocc/notification_settings.toml` and dispatch notifications directly to HTTP-based channels (ntfy, webhook, pushover). The hook does not need the Tauri runtime, Rust notification sinks, or a display server — it just needs HTTP requests to make fire-and-forget POST calls.
 
 **Decision:** Add a direct notification dispatch path to `eocc-hook` that:
 1. Parses `~/.eocc/notification_settings.toml` using a minimal inline TOML parser (no npm dependencies)
@@ -31,17 +31,11 @@ Architectural decisions and insights captured during development.
 
 **Tradeoff:** Multiple concurrent Claude sessions could race on this file. The worst case is a duplicate notification or a missed one — both acceptable for a best-effort system.
 
-## TOML parsing without dependencies
+## TOML parsing without dependencies (historical)
 
-**Problem:** The hook uses CommonJS with only Node.js built-in modules (`node:fs`, `node:path`, `node:os`, `node:http`, `node:https`). Adding npm dependencies (like a TOML parser) would require a build step and complicate installation.
+**Problem:** When the hook was a Node.js script using only built-in modules, adding npm dependencies (like a TOML parser) would have required a build step and complicated installation.
 
-**Decision:** Write a minimal inline TOML parser that handles the specific format produced by the app's `toml::to_string_pretty()`:
-- Simple key-value pairs (booleans, integers, quoted strings)
-- Inline arrays (`["a", "b"]`)
-- Array-of-tables sections (`[[channels]]`, `[[project_rules]]`)
-- Comment stripping (respecting quoted strings)
-
-This is sufficient for `notification_settings.toml` and avoids any external dependency.
+**Original decision:** A minimal inline TOML parser was written that handled the specific format produced by the app's `toml::to_string_pretty()`. This is no longer needed — the hook is now a Rust binary that uses the `toml` crate directly.
 
 ## Dual notification paths
 
@@ -102,20 +96,18 @@ This eliminates the race condition entirely — the desktop sees the status chan
 
 **Takeaway:** When two processes need to avoid duplicating work, prefer static partitioning (configuration-time decision) over runtime coordination (protocol between processes). Runtime coordination adds types, state, clearing logic, and race windows. Static partitioning adds one config field and a filter in each process's startup path.
 
-## Hook language choice: Node.js vs. Rust
+## Hook language choice: Node.js vs. Rust (resolved)
 
-**Problem:** The `eocc-hook` is a Node.js CommonJS script that duplicates logic already present in the Rust `eocc-core` crate: TOML parsing, session status mapping, transition detection, notification dispatch, pattern matching, and cooldown enforcement. Every new feature (notification channels, filtering rules, project rules) must be implemented twice and kept in sync across languages.
+**Problem:** The `eocc-hook` was originally a Node.js CommonJS script that duplicated logic already present in the Rust `eocc-core` crate: TOML parsing, session status mapping, transition detection, notification dispatch, pattern matching, and cooldown enforcement. Every new feature (notification channels, filtering rules, project rules) had to be implemented twice and kept in sync across languages.
 
-**Why Node.js was chosen:** Claude Code guarantees `node` is available wherever it runs, so the hook has zero installation dependencies beyond copying a single script file. No compilation step, no platform-specific binaries, no runtime to install.
+**Why Node.js was originally chosen:** Claude Code guarantees `node` is available wherever it runs, so the hook had zero installation dependencies beyond copying a single script file. No compilation step, no platform-specific binaries, no runtime to install.
 
-**Why Rust would have been better:** If the hook were a small Rust binary in the same Cargo workspace, it would import `eocc-core` directly — sharing types (`SessionStatus`, `EventType`, `Settings`), logic (`upsert_session`, transition detection), and the real `toml` crate instead of a hand-rolled subset parser. The entire "dual notification paths" problem and deduplication complexity would not exist — there would be one codebase with two entry points (desktop app and hook binary).
+**Resolution:** The hook was rewritten as a Rust binary (`src-tauri/crates/eocc-core/src/bin/eocc-hook.rs`) that imports `eocc-core` directly — sharing types, logic, and the real `toml` crate. The Node.js `eocc-hook` and `eocc-lib.cjs` were deleted. The desktop app's `build.rs` compiles the hook binary and embeds it via `include_bytes!` for auto-installation.
 
-**What this would require:**
-- A new binary target in the Cargo workspace (e.g., `src-tauri/src/bin/eocc-hook.rs`)
-- Cross-compilation for each target platform — but the release CI already builds for macOS (aarch64), Linux (x64), and Windows (x64)
-- Distribution of the hook binary alongside the desktop app in release artifacts
-- Users on headless servers would need the compiled binary rather than just copying a script
-
-**Tradeoff:** The Node.js approach optimizes for zero-friction installation (copy one file, it runs everywhere `node` exists). The Rust approach optimizes for correctness and maintainability (single source of truth, no logic duplication, no cross-language sync). For a project that already has a Rust workspace with a pure-logic crate, the maintenance cost of a second implementation in a different language compounds over time and outweighs the installation convenience.
+**Result:**
+- Single source of truth for all hook logic (types, transition detection, notification dispatch)
+- No hand-rolled TOML parser — uses the same `toml` crate as the desktop app
+- No Node.js runtime dependency on headless servers
+- The `eocc-server` (web dashboard) remains Node.js since it has no shared logic with the core
 
 **Takeaway:** When you have a workspace with a shared logic crate, write companion tools in the same language. A second implementation in a different language creates a maintenance boundary that grows with every feature. The installation convenience of a scripting language is real but finite; the maintenance cost of duplicated logic is ongoing.

@@ -7,7 +7,7 @@ EOCC supports three deployment modes:
 | Mode | Components | Use case |
 |------|-----------|----------|
 | **Desktop only** | Desktop app + hook | Local development on macOS/Linux/Windows |
-| **Headless server** | Hook + server scripts | Remote machines, containers, SSH sessions |
+| **Headless server** | Hook binary + server script | Remote machines, containers, SSH sessions |
 | **Hybrid** | Desktop app + remote hook via webhook | Local dashboard monitoring remote sessions |
 
 ## Desktop only
@@ -26,7 +26,7 @@ pnpm tauri build
 ```
 
 On first launch, the app presents a setup modal that:
-1. Installs `eocc-hook` to the app's data directory
+1. Installs the `eocc-hook` binary to the app's data directory
 2. Offers to merge hook config into `~/.claude/settings.json`
 
 ## Headless server
@@ -36,14 +36,13 @@ For remote machines where Claude Code runs in tmux.
 ### Quick start
 
 ```bash
-# 1. Copy scripts to the remote machine
-scp eocc-hook eocc-server eocc-lib.cjs user@remote:~/.local/bin/
-
-# 2. SSH into the machine and make executable
-ssh user@remote
+# 1. Install the hook binary (download from releases or build from source)
+cargo build --release -p eocc-core --bin eocc-hook --features headless
+cp target/release/eocc-hook ~/.local/bin/eocc-hook
+cp eocc-server ~/.local/bin/eocc-server
 chmod +x ~/.local/bin/eocc-hook ~/.local/bin/eocc-server
 
-# 3. Register hooks with Claude Code
+# 2. Register hooks with Claude Code
 cat > ~/.claude/settings.json << 'EOF'
 {
   "hooks": {
@@ -56,7 +55,7 @@ cat > ~/.claude/settings.json << 'EOF'
 }
 EOF
 
-# 4. Configure notifications
+# 3. Configure notifications
 cat > ~/.eocc/notification_settings.toml << 'EOF'
 enabled = true
 
@@ -66,23 +65,24 @@ server = "https://ntfy.sh"
 topic = "my-claude-alerts"
 EOF
 
-# 5. Start the web dashboard
+# 4. Start the web dashboard
 eocc-server --port 8080
 ```
 
 ### Container deployment
 
-The hook and server scripts have zero npm dependencies. Copy just three files:
+The hook binary is a standalone executable with no runtime dependencies.
 
 ```dockerfile
-FROM node:24-slim
+FROM ubuntu:24.04
 
-# Copy EOCC scripts (42 KB total)
-COPY eocc-hook eocc-server eocc-lib.cjs /usr/local/bin/
+# Copy EOCC hook binary and server script
+COPY eocc-hook /usr/local/bin/eocc-hook
+COPY eocc-server /usr/local/bin/eocc-server
 RUN chmod +x /usr/local/bin/eocc-hook /usr/local/bin/eocc-server
 
-# Install tmux for pane viewer (optional)
-RUN apt-get update && apt-get install -y tmux && rm -rf /var/lib/apt/lists/*
+# Node.js is only needed for eocc-server (web dashboard)
+RUN apt-get update && apt-get install -y nodejs tmux && rm -rf /var/lib/apt/lists/*
 
 # Register hooks
 RUN mkdir -p /root/.claude && echo '{ \
@@ -114,9 +114,7 @@ services:
     image: node:24-slim
     volumes:
       - eocc-data:/root/.eocc
-      - ./eocc-hook:/usr/local/bin/eocc-hook
       - ./eocc-server:/usr/local/bin/eocc-server
-      - ./eocc-lib.cjs:/usr/local/bin/eocc-lib.cjs
     ports:
       - "8080:8080"
     command: ["eocc-server", "--port", "8080"]
