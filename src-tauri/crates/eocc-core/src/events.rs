@@ -1,11 +1,13 @@
 use crate::state::{AppState, EventInfo, EventType, NotificationType, SessionInfo, SessionStatus};
 
+const MAX_RECENT_EVENTS: usize = 50;
+
 /// Process a single event and update the app state.
 /// This is the pure logic version without side effects (no tmux path caching).
 /// The main app wraps this with additional side effects.
 pub fn process_event(state: &mut AppState, event: EventInfo) {
     state.recent_events.push_back(event.clone());
-    if state.recent_events.len() > 50 {
+    if state.recent_events.len() > MAX_RECENT_EVENTS {
         state.recent_events.pop_front();
     }
 
@@ -409,14 +411,14 @@ mod tests {
     }
 
     #[test]
-    fn recent_events_capped_at_50() {
+    fn recent_events_capped_at_max() {
         let mut state = AppState::default();
-        for i in 0..60 {
+        for i in 0..(MAX_RECENT_EVENTS + 10) {
             let mut event = make_simple_event(EventType::PostToolUse);
             event.timestamp = format!("2025-01-01T{:02}:00:00Z", i % 24);
             process_event(&mut state, event);
         }
-        assert_eq!(state.recent_events.len(), 50);
+        assert_eq!(state.recent_events.len(), MAX_RECENT_EVENTS);
     }
 
     // -- apply_events_to_state --

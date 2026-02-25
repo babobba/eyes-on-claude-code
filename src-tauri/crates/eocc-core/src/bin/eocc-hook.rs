@@ -7,7 +7,8 @@
 
 use eocc_core::hook_state;
 use eocc_core::notifications::{
-    self, build_sinks, load_settings_from_file, NotificationPriority, SessionNotification,
+    self, build_sinks, load_settings_from_file, urlencoded, NotificationPriority,
+    SessionNotification,
 };
 use eocc_core::state::{EventInfo, EventType, HookChannelResult, NotificationType, SessionStatus};
 use serde_json::Value;
@@ -563,17 +564,6 @@ fn build_connect_url(transport: &TransportInfo) -> String {
         "mosh" => format!("mosh://{}{}{}", user, transport.host, tmux_cmd),
         _ => String::new(),
     }
-}
-
-fn urlencoded(s: &str) -> String {
-    s.bytes()
-        .map(|b| match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                String::from(b as char)
-            }
-            _ => format!("%{:02X}", b),
-        })
-        .collect()
 }
 
 // ---------------------------------------------------------------------------

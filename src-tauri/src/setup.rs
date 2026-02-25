@@ -323,50 +323,21 @@ pub fn check_claude_settings() -> HookStatus {
 
     use hook_types::*;
 
-    // Check each hook type
-    let session_start = hooks
-        .get(SESSION_START)
-        .map(|h| has_eocc_hook_in_array(h, None))
-        .unwrap_or(false);
-
-    let session_end = hooks
-        .get(SESSION_END)
-        .map(|h| has_eocc_hook_in_array(h, None))
-        .unwrap_or(false);
-
-    let stop = hooks
-        .get(STOP)
-        .map(|h| has_eocc_hook_in_array(h, None))
-        .unwrap_or(false);
-
-    let post_tool_use = hooks
-        .get(POST_TOOL_USE)
-        .map(|h| has_eocc_hook_in_array(h, None))
-        .unwrap_or(false);
-
-    let user_prompt_submit = hooks
-        .get(USER_PROMPT_SUBMIT)
-        .map(|h| has_eocc_hook_in_array(h, None))
-        .unwrap_or(false);
-
-    let notification_permission = hooks
-        .get(NOTIFICATION)
-        .map(|h| has_eocc_hook_in_array(h, Some("permission_prompt")))
-        .unwrap_or(false);
-
-    let notification_idle = hooks
-        .get(NOTIFICATION)
-        .map(|h| has_eocc_hook_in_array(h, Some("idle_prompt")))
-        .unwrap_or(false);
+    let check = |hook_type: &str, matcher: Option<&str>| -> bool {
+        hooks
+            .get(hook_type)
+            .map(|h| has_eocc_hook_in_array(h, matcher))
+            .unwrap_or(false)
+    };
 
     HookStatus {
-        session_start,
-        session_end,
-        stop,
-        post_tool_use,
-        user_prompt_submit,
-        notification_permission,
-        notification_idle,
+        session_start: check(SESSION_START, None),
+        session_end: check(SESSION_END, None),
+        stop: check(STOP, None),
+        post_tool_use: check(POST_TOOL_USE, None),
+        user_prompt_submit: check(USER_PROMPT_SUBMIT, None),
+        notification_permission: check(NOTIFICATION, Some("permission_prompt")),
+        notification_idle: check(NOTIFICATION, Some("idle_prompt")),
     }
 }
 
