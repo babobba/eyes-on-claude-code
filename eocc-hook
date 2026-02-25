@@ -120,10 +120,8 @@ async function main() {
   const timestamp = isoTimestampUtc();
 
   // Capture binary paths for session_start and stop events
-  let npxPath = "";
   let tmuxPath = "";
   if (eventType === "session_start" || eventType === "stop") {
-    npxPath = whichCommand("npx");
     tmuxPath = whichCommand("tmux");
   }
 
@@ -138,7 +136,6 @@ async function main() {
     notification_type: notificationType,
     tool_name: toolName,
     tmux_pane: tmuxPane,
-    npx_path: npxPath,
     tmux_path: tmuxPath,
   };
 
@@ -270,7 +267,6 @@ async function tryDispatchNotification(home, eventType, notificationType, projec
       notification_type: "",
       tool_name: "",
       tmux_pane: "",
-      npx_path: "",
       tmux_path: "",
       notification_results: channelResults,
     };

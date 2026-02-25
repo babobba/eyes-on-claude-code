@@ -76,11 +76,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         notification_type_str = matcher.to_string();
     }
 
-    let (npx_path, tmux_path_bin) = if event_type_str == "session_start" || event_type_str == "stop"
-    {
-        (which_command("npx"), which_command("tmux"))
+    let tmux_path_bin = if event_type_str == "session_start" || event_type_str == "stop" {
+        which_command("tmux")
     } else {
-        (String::new(), String::new())
+        String::new()
     };
 
     let timestamp = iso_timestamp_utc();
@@ -102,7 +101,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         notification_type,
         tool_name: tool_name.clone(),
         tmux_pane: tmux_pane.clone(),
-        npx_path,
         tmux_path: tmux_path_bin,
         transport_type: String::new(),
         transport_host: String::new(),
@@ -340,7 +338,6 @@ fn dispatch_notification_inner(ctx: &NotifyContext<'_>) -> Result<(), Box<dyn st
             notification_type: NotificationType::Other,
             tool_name: String::new(),
             tmux_pane: String::new(),
-            npx_path: String::new(),
             tmux_path: String::new(),
             transport_type: String::new(),
             transport_host: String::new(),

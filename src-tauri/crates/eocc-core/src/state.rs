@@ -100,8 +100,6 @@ pub struct EventInfo {
     #[serde(default)]
     pub tmux_pane: String,
     #[serde(default)]
-    pub npx_path: String,
-    #[serde(default)]
     pub tmux_path: String,
     #[serde(default)]
     pub transport_type: String,
@@ -261,16 +259,11 @@ impl Default for Settings {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CachedPaths {
     #[serde(default)]
-    pub npx_path: String,
-    #[serde(default)]
     pub tmux_path: String,
 }
 
 impl CachedPaths {
     pub fn update_from_event(&mut self, event: &EventInfo) {
-        if !event.npx_path.is_empty() {
-            self.npx_path = event.npx_path.clone();
-        }
         if !event.tmux_path.is_empty() {
             self.tmux_path = event.tmux_path.clone();
         }
@@ -369,7 +362,6 @@ mod tests {
             notification_type: NotificationType::Other,
             tool_name: String::new(),
             tmux_pane: String::new(),
-            npx_path: String::new(),
             tmux_path: String::new(),
             transport_type: String::new(),
             transport_host: String::new(),
@@ -625,7 +617,6 @@ mod tests {
     #[test]
     fn cached_paths_default_is_empty() {
         let paths = CachedPaths::default();
-        assert!(paths.npx_path.is_empty());
         assert!(paths.tmux_path.is_empty());
     }
 
@@ -633,24 +624,20 @@ mod tests {
     fn cached_paths_update_sets_nonempty_paths() {
         let mut paths = CachedPaths::default();
         let mut event = make_event(EventType::SessionStart);
-        event.npx_path = "/usr/local/bin/npx".to_string();
         event.tmux_path = "/usr/local/bin/tmux".to_string();
 
         paths.update_from_event(&event);
-        assert_eq!(paths.npx_path, "/usr/local/bin/npx");
         assert_eq!(paths.tmux_path, "/usr/local/bin/tmux");
     }
 
     #[test]
     fn cached_paths_ignores_empty_values() {
         let mut paths = CachedPaths {
-            npx_path: "/existing/npx".to_string(),
             tmux_path: "/existing/tmux".to_string(),
         };
         let event = make_event(EventType::SessionStart);
 
         paths.update_from_event(&event);
-        assert_eq!(paths.npx_path, "/existing/npx");
         assert_eq!(paths.tmux_path, "/existing/tmux");
     }
 
@@ -861,14 +848,12 @@ mod tests {
             "notification_type": "other",
             "tool_name": "",
             "tmux_pane": "%0",
-            "npx_path": "/usr/bin/npx",
             "tmux_path": "/usr/bin/tmux"
         }"#;
         let event: EventInfo = serde_json::from_str(json).unwrap();
         assert_eq!(event.event_type, EventType::SessionStart);
         assert_eq!(event.project_name, "myproject");
         assert_eq!(event.tmux_pane, "%0");
-        assert_eq!(event.npx_path, "/usr/bin/npx");
     }
 
     #[test]
@@ -887,7 +872,6 @@ mod tests {
         assert_eq!(event.notification_type, NotificationType::Other);
         assert!(event.tool_name.is_empty());
         assert!(event.tmux_pane.is_empty());
-        assert!(event.npx_path.is_empty());
         assert!(event.tmux_path.is_empty());
     }
 

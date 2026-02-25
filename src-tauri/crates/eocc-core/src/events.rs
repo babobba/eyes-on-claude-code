@@ -101,7 +101,6 @@ mod tests {
             notification_type,
             tool_name: String::new(),
             tmux_pane: String::new(),
-            npx_path: String::new(),
             tmux_path: String::new(),
             transport_type: String::new(),
             transport_host: String::new(),
@@ -160,10 +159,10 @@ mod tests {
     fn session_start_updates_cached_paths() {
         let mut state = AppState::default();
         let mut event = make_simple_event(EventType::SessionStart);
-        event.npx_path = "/usr/local/bin/npx".into();
+        event.tmux_path = "/usr/local/bin/tmux".into();
         process_event(&mut state, event);
 
-        assert_eq!(state.cached_paths.npx_path, "/usr/local/bin/npx");
+        assert_eq!(state.cached_paths.tmux_path, "/usr/local/bin/tmux");
     }
 
     // -- SessionEnd --
@@ -325,11 +324,9 @@ mod tests {
     fn stop_updates_cached_paths() {
         let mut state = AppState::default();
         let mut stop = make_simple_event(EventType::Stop);
-        stop.npx_path = "/usr/bin/npx".into();
         stop.tmux_path = "/usr/bin/tmux".into();
         process_event(&mut state, stop);
 
-        assert_eq!(state.cached_paths.npx_path, "/usr/bin/npx");
         assert_eq!(state.cached_paths.tmux_path, "/usr/bin/tmux");
     }
 

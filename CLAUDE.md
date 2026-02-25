@@ -2,7 +2,7 @@
 
 ## Project overview
 
-Eyes on Claude Code (EOCC) is a Tauri v2 desktop application that monitors Claude Code sessions via global hooks. It provides a menubar/tray icon and a dashboard UI for tracking multiple Claude Code sessions across projects. Key features include session state monitoring, git diff viewing (via difit), tmux pane integration, and notification sounds.
+Eyes on Claude Code (EOCC) is a Tauri v2 desktop application that monitors Claude Code sessions via global hooks. It provides a menubar/tray icon and a dashboard UI for tracking multiple Claude Code sessions across projects. Key features include session state monitoring, tmux pane integration, push notifications (ntfy, webhook, pushover), and notification sounds.
 
 **Repository**: `joe-re/eyes-on-claude-code`
 **License**: MIT
@@ -25,8 +25,7 @@ This is a **Tauri v2** app with a React + TypeScript frontend and a Rust backend
 │   │   ├── Header.tsx      # Dashboard header with status counts
 │   │   ├── MinimumView.tsx # Compact view when window is unfocused
 │   │   ├── TmuxViewer.tsx  # Tmux pane viewer with keyboard input
-│   │   ├── DiffButton.tsx  # Diff launcher button
-│   │   ├── BranchCombobox.tsx # Branch selector for diff comparison
+│   │   ├── NotificationSettings.tsx # Notification channel configuration UI
 │   │   ├── StatCard.tsx    # Status count display
 │   │   ├── EmptyState.tsx  # Empty state placeholder
 │   │   └── icons.tsx       # SVG icon components
@@ -53,16 +52,15 @@ This is a **Tauri v2** app with a React + TypeScript frontend and a Rust backend
 │   │   ├── menu.rs         # App menu and tray menu construction
 │   │   ├── tray.rs         # Tray icon updates and badge management
 │   │   ├── git.rs          # Git operations (branch, status, commits)
-│   │   ├── difit.rs        # Difit process management for diff viewing
 │   │   ├── tmux.rs         # Tmux pane interaction commands
+│   │   ├── api_server.rs   # HTTP API server for remote notification delivery
+│   │   ├── notification_pipeline.rs # Desktop notification dispatch pipeline
 │   │   ├── persist.rs      # Runtime state persistence (save/load sessions)
 │   │   ├── settings.rs     # Settings file I/O, directory resolution
 │   │   └── constants.rs    # Shared constants (icon data, window sizes)
 │   ├── Cargo.toml          # Rust dependencies
 │   ├── tauri.conf.json     # Tauri configuration
 │   └── icons/              # App icons for all platforms
-├── app/src-tauri/src/
-│   └── persist.rs          # Standalone persist module (used by app build)
 ├── eocc-hook               # Node.js hook script (installed to ~/.local/bin/eocc-hook)
 ├── scripts/
 │   ├── audit-licenses.mjs  # License compatibility audit script

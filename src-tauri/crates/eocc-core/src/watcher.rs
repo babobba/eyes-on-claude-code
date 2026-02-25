@@ -165,7 +165,7 @@ mod tests {
         let events_path = dir.join("events.jsonl");
         let processing_path = dir.join("events.processing.jsonl");
 
-        let event_json = r#"{"timestamp":"2025-01-01T00:00:00Z","event":"session_start","matcher":"hook","project_name":"test","project_dir":"/test","session_id":"s1","message":"","notification_type":"other","tool_name":"","tmux_pane":"","npx_path":"","tmux_path":""}"#;
+        let event_json = r#"{"timestamp":"2025-01-01T00:00:00Z","event":"session_start","matcher":"hook","project_name":"test","project_dir":"/test","session_id":"s1","message":"","notification_type":"other","tool_name":"","tmux_pane":"","tmux_path":""}"#;
         fs::write(&events_path, format!("{}\n", event_json)).unwrap();
 
         let events = read_events_queue(&events_path, &processing_path);
